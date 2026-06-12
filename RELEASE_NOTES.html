@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星宝数据查询系统 — 版本升级说明</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    background: #f5f7fa;
+    color: #1a1a2e;
+    line-height: 1.6;
+    padding: 40px 20px;
+  }
+  .container {
+    max-width: 800px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 28px;
+    font-weight: 800;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    color: #888;
+    font-size: 14px;
+    margin-bottom: 32px;
+  }
+  .version-card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.04);
+  }
+  .version-badge {
+    display: inline-block;
+    background: #1890ff;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 3px 12px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+  .version-badge.gold {
+    background: #faad14;
+    color: #1a1a2e;
+  }
+  .version-date {
+    color: #999;
+    font-size: 13px;
+    margin-left: 10px;
+  }
+  h2 {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-right: 4px;
+  }
+  .tag-new { background: #e6f7ff; color: #1890ff; }
+  .tag-mod { background: #fff7e6; color: #fa8c16; }
+  .tag-del { background: #fff2f0; color: #ff4d4f; }
+  .tag-fix { background: #f6ffed; color: #52c41a; }
+  .tag-arch { background: #f0f5ff; color: #722ed1; }
+
+  .section-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #555;
+    margin: 20px 0 8px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    margin: 8px 0;
+  }
+  th {
+    text-align: left;
+    font-weight: 600;
+    color: #555;
+    background: #fafafa;
+    padding: 8px 12px;
+    border-bottom: 2px solid #f0f0f0;
+    font-size: 13px;
+  }
+  td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #f5f5f5;
+  }
+
+  .arch-diagram {
+    background: #fafafa;
+    border: 1px solid #e8e8e8;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 12px 0;
+    font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.8;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  .impact-box {
+    display: flex;
+    gap: 12px;
+    margin: 8px 0;
+  }
+  .impact-item {
+    flex: 1;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .impact-item.down {
+    background: #fff2f0;
+    border: 1px solid #ffccc7;
+  }
+  .impact-item.up {
+    background: #f6ffed;
+    border: 1px solid #b7eb8f;
+  }
+  .impact-item.same {
+    background: #f0f5ff;
+    border: 1px solid #d6e4ff;
+  }
+  .impact-label {
+    font-weight: 700;
+    font-size: 12px;
+    color: #555;
+    margin-bottom: 4px;
+  }
+  .impact-value {
+    font-size: 18px;
+    font-weight: 700;
+  }
+  .impact-value.negative { color: #ff4d4f; }
+  .impact-value.positive { color: #52c41a; }
+  .impact-value.neutral { color: #1890ff; }
+
+  .badge-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid #f0f0f0;
+    margin: 16px 0;
+  }
+
+  @media (max-width: 600px) {
+    .impact-box { flex-direction: column; }
+    .version-card { padding: 20px 16px; }
+    .arch-diagram { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>星宝数据查询系统</h1>
+<p class="subtitle">版本升级说明 · 2026-05-15</p>
+
+<!-- ===== v2.0.0 ===== -->
+<div class="version-card">
+  <div>
+    <span class="version-badge gold">v2.0.0</span>
+    <span class="version-date">2026-05-15</span>
+  </div>
+  <h2>🏗️ 重大架构变更：LLM 理解语义 + 三层缓存</h2>
+
+  <p style="margin-bottom:12px;color:#555;font-size:14px;">
+    移除「正则模板猜语义」的模糊模板，改为 LLM 真正理解自然语言后翻译 SQL，
+    配合三层缓存加速重复查询。
+  </p>
+
+  <div class="section-title">架构对比</div>
+  <div class="arch-diagram">旧架构（v1.x）：
+用户 → 正则模板 → 猜语义 → 猜错就加补丁 → 无限循环
+                        ↓
+                   "感冒被当药品" → 加疾病库
+                   "广州被当药品" → 加城市白名单
+                   "下一个漏在哪" → 不知道
+
+
+新架构（v2.0）：
+用户 → [精确模板] → 命中 → 毫秒级返回
+     → [三层缓存] → 命中 → 毫秒级返回
+     → [LLM 翻译]  → 写入缓存 → 正确SQL（仅首次）</div>
+
+  <div class="section-title">变更清单</div>
+  <table>
+    <tr><th style="width:100px">文件</th><th style="width:80px">变更</th><th>说明</th></tr>
+    <tr>
+      <td><code>query_cache.py</code></td>
+      <td><span class="tag tag-new">新增</span></td>
+      <td>三层缓存引擎：精确匹配 / 归一化匹配 / 语义匹配</td>
+    </tr>
+    <tr>
+      <td><code>domain_knowledge.py</code></td>
+      <td><span class="tag tag-new">新增</span></td>
+      <td>领域知识引擎（药品库 28k 条 / 疾病关键词 180 / 城市白名单 157）</td>
+    </tr>
+    <tr>
+      <td><code>domain_data.json</code></td>
+      <td><span class="tag tag-new">新增</span></td>
+      <td>从 drug-analysis 映射表提取的知识数据（265KB）</td>
+    </tr>
+    <tr>
+      <td><code>template_matcher.py</code></td>
+      <td><span class="tag tag-mod">简化</span></td>
+      <td>仅保留 10 个确定性精确模板，移除模糊模板</td>
+    </tr>
+    <tr>
+      <td><code>query_router.py</code></td>
+      <td><span class="tag tag-mod">改造</span></td>
+      <td>集成三层缓存流程（精确模板 → 缓存 → LLM）</td>
+    </tr>
+    <tr>
+      <td><code>models.py</code></td>
+      <td><span class="tag tag-mod">修改</span></td>
+      <td>QueryInfo.source 支持 "cache" 值</td>
+    </tr>
+  </table>
+
+  <div class="section-title">三层缓存</div>
+  <table>
+    <tr><th>层</th><th>匹配方式</th><th>速度</th><th>示例</th></tr>
+    <tr>
+      <td><strong>L1</strong></td>
+      <td>原始问题完全一致</td>
+      <td>&lt;1ms</td>
+      <td>"感冒场景数" → SQL</td>
+    </tr>
+    <tr>
+      <td><strong>L2</strong></td>
+      <td>去停用词后归一化</td>
+      <td>&lt;1ms</td>
+      <td>"感冒场景数" ≈ "感冒"</td>
+    </tr>
+    <tr>
+      <td><strong>L3</strong></td>
+      <td>语义类型+关键词</td>
+      <td>&lt;1ms</td>
+      <td>disease:感冒 → 同类命中</td>
+    </tr>
+  </table>
+
+  <div class="section-title">性能影响</div>
+  <div class="impact-box">
+    <div class="impact-item down">
+      <div class="impact-label">首次疾病/城市/药品查询</div>
+      <div class="impact-value negative">8ms → 3-8s</div>
+      <div style="font-size:12px;color:#888;margin-top:4px;">需走 LLM 翻译</div>
+    </div>
+    <div class="impact-item up">
+      <div class="impact-label">重复查询</div>
+      <div class="impact-value positive">8ms → &lt;1ms</div>
+      <div style="font-size:12px;color:#888;margin-top:4px;">缓存直接命中</div>
+    </div>
+    <div class="impact-item up">
+      <div class="impact-label">查询准确性</div>
+      <div class="impact-value positive">大幅提升</div>
+      <div style="font-size:12px;color:#888;margin-top:4px;">LLM 真正理解语义</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== v1.3.0 ===== -->
+<div class="version-card">
+  <div>
+    <span class="version-badge">v1.3.0</span>
+    <span class="version-date">2026-05-15</span>
+  </div>
+  <h2>🔧 SQL 编辑器 + 修改密码 + 安全重启</h2>
+
+  <div class="section-title">新增功能</div>
+  <table>
+    <tr><th>功能</th><th>说明</th></tr>
+    <tr>
+      <td>🔧 <strong>SQL 编辑器</strong></td>
+      <td>「查看算法」面板中 SQL 由只读改为可编辑 textarea，改完点「修改并运行」直接执行</td>
+    </tr>
+    <tr>
+      <td>🔑 <strong>修改密码</strong></td>
+      <td>Header 新增 🔑 按钮，弹窗输入旧密码+新密码自行修改（SHA-256 哈希存储）</td>
+    </tr>
+    <tr>
+      <td>🚀 <strong>安全重启脚本</strong></td>
+      <td><code>safe-restart.sh --prod / --test</code>，优雅关闭→端口等待→健康检查轮询</td>
+    </tr>
+  </table>
+
+  <div class="section-title">变更清单</div>
+  <table>
+    <tr><th style="width:120px">文件</th><th style="width:80px">变更</th><th>说明</th></tr>
+    <tr><td><code>auth.py</code></td><td><span class="tag tag-mod">修改</span></td><td>bcrypt → SHA-256 哈希（绕开版本兼容问题）</td></tr>
+    <tr><td><code>auth_router.py</code></td><td><span class="tag tag-mod">修改</span></td><td>新增 POST /api/auth/change-password 接口</td></tr>
+    <tr><td><code>password_store.py</code></td><td><span class="tag tag-new">新增</span></td><td>密码覆盖存储（SQLite，优先级高于 .env）</td></tr>
+    <tr><td><code>models.py</code></td><td><span class="tag tag-mod">修改</span></td><td>新增 ChangePasswordRequest/Response</td></tr>
+    <tr><td><code>QueryPage.tsx</code></td><td><span class="tag tag-mod">修改</span></td><td>SQL 编辑器 + 🔑 修改密码入口</td></tr>
+    <tr><td><code>ChangePasswordModal.tsx</code></td><td><span class="tag tag-new">新增</span></td><td>修改密码弹窗组件</td></tr>
+    <tr><td><code>App.css</code></td><td><span class="tag tag-mod">修改</span></td><td>SQL 编辑器 + 通用 Modal 样式</td></tr>
+    <tr><td><code>safe-restart.sh</code></td><td><span class="tag tag-new">新增</span></td><td>安全重启脚本（v1.0.0）</td></tr>
+  </table>
+</div>
+
+<hr style="margin:24px 0">
+
+<p style="text-align:center;color:#bbb;font-size:13px;">
+  星宝语料场景查询系统 · <a href="http://49.232.90.75:8000" target="_blank" style="color:#1890ff;text-decoration:none;">生产环境 8000</a>
+   · <a href="http://49.232.90.75:8002" target="_blank" style="color:#1890ff;text-decoration:none;">测试环境 8002</a>
+</p>
+
+</div>
+</body>
+</html>
