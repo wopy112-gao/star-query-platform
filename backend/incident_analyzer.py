@@ -558,6 +558,149 @@ def save_proposal(proposal: dict) -> str:
     return str(filepath)
 
 
+def _apply_few_shot(change: dict) -> str:
+    """添加 few-shot 示例到 llm_translator.py"""
+    try:
+        content = change.get("content", {})
+        question = content.get("question", "")
+        sql = content.get("sql", "")
+        if not question or not sql:
+            return "缺少 question 或 sql，跳过"
+
+        target = Path(__file__).resolve().parent.parent / "backend" / "llm_translator.py"
+        # 兼容测试/正式环境路径
+        if not target.exists():
+            target = Path(__file__).resolve().parent / "llm_translator.py"
+        if not target.exists():
+            return f"找不到 llm_translator.py"
+
+        text = target.read_text(encoding="utf-8")
+
+        # 检查是否已存在相同示例（防重复添加）
+        if question in text:
+            return f"示例已存在，跳过: {question[:40]}"
+
+        # 在最后一个示例后面插入新示例
+        # 找通用统计或同分类的末尾
+        import re as _re
+        # 找 "通用统计" 分类的末尾，在其后插入
+        # 通用统计是第一条，在所有示例分类之后添加
+        # 简单策略：在最后一个 ], 前面插入
+        # 找到 examples 数组的结尾
+        inserts = []
+        for known_tag in ["实体计数", "通用统计"]:
+            tag_pos = text.find(f'"{known_tag}"')
+            if tag_pos > 0:
+                # 找该 tag 的最后一个 }
+                after_tag = text[tag_pos:]
+                last_close = after_tag.rfind("},")
+                if last_close > 0:
+                    abs_pos = tag_pos + last_close + 1
+                    inserts.append((abs_pos, known_tag))
+
+        if inserts:
+            # 选最靠后的 tag
+            inserts.sort(key=lambda x: x[0], reverse=True)
+            pos, tag = inserts[0]
+            new_entry = f'\n        {{"question": "{question}", "sql": "{sql}"}},'
+            text = text[:pos] + new_entry + text[pos:]
+            target.write_text(text, encoding="utf-8")
+            return f"已添加 few-shot 示例: {question[:40]}"
+        else:
+            return "未找到合适的插入位置"
+    except Exception as e:
+        return f"添加 few-shot 失败: {e}"
+
+
+def _apply_condition_type(change: dict) -> str:
+    """添加条件类型到 intent_schemas.py"""
+    try:
+        type_name = change.get("type_name", "")
+        if not type_name:
+            return "缺少 type_name"
+
+        target = Path(__file__).resolve().parent.parent / "backend" / "intent_schemas.py"
+        if not target.exists():
+            target = Path(__file__).resolve().parent / "intent_schemas.py"
+        if not target.exists():
+            return "找不到 intent_schemas.py"
+
+        text = target.read_text(encoding="utf-8")
+        if type_name in text:
+            return f"条件类型已存在，跳过: {type_name}"
+
+        # 在 CONFIDENCE 枚举值之后插入
+        import re as _re
+        m = _re.search(r'(CONFIDENCE\s*=\s*"confidence".*?)\n', text)
+        if m:
+            insert_pos = m.end()
+            comment = change.get("comment", "")
+            new_entry = f'    {type_name.upper()} = "{type_name}"  # {comment}\n'
+            text = text[:insert_pos] + text[insert_pos:] + new_entry
+            target.write_text(text, encoding="utf-8")
+            return f"已添加条件类型: {type_name}"
+        return "未找到插入位置"
+    except Exception as e:
+        return f"添加条件类型失败: {e}"
+
+
+def _apply_renderer_map(change: dict) -> str:
+    """添加渲染映射到 sql_renderer.py"""
+    try:
+        type_name = change.get("type_name", "")
+        if not type_name:
+            return "缺少 type_name"
+
+        target = Path(__file__).resolve().parent.parent / "backend" / "sql_renderer.py"
+        if not target.exists():
+            target = Path(__file__).resolve().parent / "sql_renderer.py"
+        if not target.exists():
+            return "找不到 sql_renderer.py"
+
+        text = target.read_text(encoding="utf-8")
+        if f'"{type_name}"' in text:
+            return f"渲染映射已存在，跳过: {type_name}"
+
+        # 在最后一个映射项前插入（在已存在项最后）
+        import re as _re
+        # 找 CONDITION_SQL_MAP 的最后一个条目
+        m = _re.search(r'"(time_range|commercial)".*?__DYNAMIC__', text)
+        if m:
+            insert_pos = m.end()
+            sql_template = change.get("sql_template", f"--- {type_name} 需人工确认 ---")
+            new_entry = f'\n    "{type_name}": "{sql_template}",'
+            text = text[:insert_pos] + new_entry + text[insert_pos:]
+            target.write_text(text, encoding="utf-8")
+            return f"已添加渲染映射: {type_name}"
+        return "未找到插入位置"
+    except Exception as e:
+        return f"添加渲染映射失败: {e}"
+
+
+def apply_proposal(proposal: dict) -> list[str]:
+    """自动执行修复方案中的 proposed_changes"""
+    results = []
+    changes = proposal.get("proposed_changes", [])
+
+    for i, change in enumerate(changes):
+        action = change.get("action", "")
+
+        if action == "add_few_shot":
+            results.append(f"  [{i+1}] {_apply_few_shot(change)}")
+        elif action == "add_condition_type":
+            results.append(f"  [{i+1}] {_apply_condition_type(change)}")
+        elif action == "add_renderer_map":
+            results.append(f"  [{i+1}] {_apply_renderer_map(change)}")
+        elif action in ("update_prompt_rule", "fix_template"):
+            file = change.get("file", "?")
+            note = change.get("note", "需人工处理")
+            results.append(f"  [{i+1}] ⚠️ {action} → {file}: {note}")
+        else:
+            results.append(f"  [{i+1}] ⚠️ 未知动作: {action}")
+
+    return results
+
+
 def scan_and_analyze() -> list[dict]:
     """完整流程：扫描→分组→分析→输出方案"""
     pending = scan_pending()
@@ -578,6 +721,16 @@ def scan_and_analyze() -> list[dict]:
 
             for inc in group:
                 mark_analyzed(inc.get("incident_id", ""))
+
+            # 将分析结果同步写入 SQLite（管理后台可见 readable 的分析）
+            _sync_analysis_to_sqlite(proposal, group)
+
+            # 自动执行修复方案（测试环境）
+            if proposal.get("proposed_changes"):
+                fix_results = apply_proposal(proposal)
+                print("  [AutoFix] 修复执行结果:")
+                for r in fix_results:
+                    print(f"    {r}")
 
     return proposals
 

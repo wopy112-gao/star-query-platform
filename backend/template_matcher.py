@@ -577,6 +577,27 @@ class TemplateMatcher:
         if has_conditions and has_no_placeholder:
             score -= 30  # 大幅减分，让有 {conditions} 的模板或 LLM fallback 胜出
 
+        # 6. 模板硬编码了具体维度但没有 {dimension} 占位符，且意图维度不同 → 减分
+        #    避免 ts10（硬编码用药人年龄分层）在意图查场景时长档时错误匹配
+        if template and template.get("sql_template"):
+            sql_has_dim_placeholder = '{dimension}' in template["sql_template"]
+        else:
+            sql_has_dim_placeholder = True
+        key_dim = key.get("dimension")
+        # 6a. 意图有维度但模板硬编码了不同的维度
+        if (dimension is not None 
+            and key_dim is not None 
+            and key_dim != "*" 
+            and key_dim != dimension 
+            and not sql_has_dim_placeholder):
+            score -= 30
+        # 6b. 意图无维度但模板硬编码了具体维度（且未指定通配符）
+        if (dimension is None
+            and key_dim is not None
+            and key_dim != "*"
+            and not sql_has_dim_placeholder):
+            score -= 20  # 减分但比6a少，因为无维度时默认选一个维度可以理解
+
         return score
 
     def get_similar_templates(

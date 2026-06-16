@@ -400,6 +400,30 @@ class SQLRenderer:
             year = m.group(1)
             return f"strftime(ydate, '%Y') = '{year}'"
 
+        # 2026年3月以前/之前 → ydate < '2026-03-01'
+        m = re.match(r"^(\d{4})\s*年\s*(\d{1,2})\s*个?月?份?\s*(以前|之前)$", v)
+        if m:
+            year = m.group(1)
+            month = m.group(2).zfill(2)
+            return f"ydate < '{year}-{month}-01'"
+
+        # 2026年1月份以后/之后/后 → ydate >= '2026-02-01'
+        m = re.match(r"^(\d{4})\s*年\s*(\d{1,2})\s*个?月?份?\s*(以后|之后|后)$", v)
+        if m:
+            year = m.group(1)
+            month = str(int(m.group(2)) + 1).zfill(2)
+            if int(m.group(2)) >= 12:
+                year = str(int(year) + 1)
+                month = "01"
+            return f"ydate >= '{year}-{month}-01'"
+
+        # 2026年3月 → ydate between '2026-03-01' and '2026-03-31'
+        m = re.match(r"^(\d{4})\s*年\s*(\d{1,2})\s*个?月?$", v)
+        if m:
+            year = m.group(1)
+            month = m.group(2).zfill(2)
+            return f"(strftime(ydate, '%Y-%m') = '{year}-{month}')"
+
         # 今年
         if v == "今年":
             return f"strftime(ydate, '%Y') = strftime(CURRENT_DATE, '%Y')"

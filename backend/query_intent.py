@@ -571,7 +571,11 @@ TIME_RANGE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"今天|今日"), "今天"),
     (re.compile(r"近\s*半\s*年"), "最近6个月"),
     (re.compile(r"近\s*(\d+)\s*年"), "最近{0}年"),
-    # 具体年份：2026年、2025年等 → 保持不变
+    # 具体年月（前/后方向）：2026年3月以前/之前/以后/之后/后 → 保持原样
+    (re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*个?月?份?\s*(以前|之前|以后|之后|后)"), None),
+    # 具体年月：2026年1月（精确到月份）
+    (re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*个?月?份?"), "{0}年{1}月"),
+    # 具体年份：2026年、2025年等 → 放在年月后面避免提前匹配
     (re.compile(r"(\d{4})\s*年"), "{0}年"),
 ]
 
@@ -582,6 +586,9 @@ def _parse_time_range_text(text: str) -> str | None:
     for pattern, template in TIME_RANGE_PATTERNS:
         m = pattern.search(text)
         if m:
+            if template is None:
+                # template=None: 保持原样（如"2026年3月以前"→不改）
+                return m.group(0)
             groups = m.groups()
             if groups:
                 return template.format(*groups)
@@ -628,6 +635,8 @@ _TIME_KEYWORDS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"同比|环比"), "time_range"),
     # 具体年份：2026年、2025年等
     (re.compile(r"\d{4}\s*年"), "time_range"),
+    # X年Y月以前/以后：2026年3月以前、2026年1月份之后
+    (re.compile(r"\d{4}\s*年\s*\d{1,2}\s*个?月?份?\s*(以前|之前|以后|之后|后)"), "time_range"),
 ]
 
 
