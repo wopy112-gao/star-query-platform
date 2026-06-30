@@ -2,13 +2,14 @@
 
 import uvicorn
 from pathlib import Path
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from sql_engine import engine
+from auth import get_current_user
 
 # ---- 静态文件目录 ----
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -58,10 +59,27 @@ app.include_router(data_export_router)
 @app.get("/api/health")
 def health():
     """健康检查"""
+    info = engine.get_schema()
     return {
         "status": "ok",
         "data_loaded": engine.is_loaded,
         "total_rows": engine.row_count,
+        "mapping": info.get("mapping"),
+    }
+
+
+# ---- 映射表热加载（无需重启） ----
+@app.post("/api/admin/reload-mapping")
+def reload_mapping(username: str = Depends(get_current_user)):
+    """热加载药品 ATC 映射表
+    
+    增量映射合并到映射表文件后，调用此接口
+    即可生效，无需重启服务。
+    """
+    info = engine.load_mapping_table()
+    return {
+        "success": info.get("loaded", False),
+        "mapping": info,
     }
 
 

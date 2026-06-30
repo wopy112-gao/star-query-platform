@@ -73,4 +73,31 @@ cd "$TEST_DIR" && bash safe-restart.sh --test >> "$LOG_FILE" 2>&1
 echo "  ✅ 测试环境已重启" >> "$LOG_FILE"
 # ----
 
+# ---- 药品映射表增量更新 ----
+echo "  📋 开始药品映射表增量更新..." >> "$LOG_FILE"
+MAPPING_FILE="/tmp/star-mapping/results/星宝药品ATC映射表_v1.xlsx"
+INCR_SCRIPT="/tmp/star-mapping/scripts/run_incremental.py"
+
+if [ -f "$INCR_SCRIPT" ] && [ -f "$MAPPING_FILE" ]; then
+    $PYTHON "$INCR_SCRIPT" --new-parquet "$FULL_FILE" --mapping "$MAPPING_FILE" >> "$LOG_FILE" 2>&1
+    echo "  ✅ 映射表增量更新完成" >> "$LOG_FILE"
+
+    # 通知正式环境和测试环境热加载新映射（不重启）
+    echo "  📋 通知环境热加载新映射表..." >> "$LOG_FILE"
+    ADMIN_TOKEN=$($PYTHON -c "
+import requests, json
+r = requests.post('http://localhost:8000/api/auth/login', 
+    json={'username':'admin','password':'admin888'})
+print(json.loads(r.text)['token'])
+" 2>/dev/null)
+    curl -s -X POST http://localhost:8000/api/admin/reload-mapping \
+        -H "Authorization: Bearer $ADMIN_TOKEN" -o /dev/null
+    curl -s -X POST http://localhost:8002/api/admin/reload-mapping \
+        -H "Authorization: Bearer $ADMIN_TOKEN" -o /dev/null
+    echo "  ✅ 正式/测试环境映射表已热加载" >> "$LOG_FILE"
+else
+    echo "  ⚠️ 增量脚本或映射表文件不存在，跳过增量更新" >> "$LOG_FILE"
+fi
+# ----
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 同步完成 ✅" >> "$LOG_FILE"

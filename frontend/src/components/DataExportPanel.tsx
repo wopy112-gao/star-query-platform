@@ -85,7 +85,8 @@ export default function DataExportPanel() {
   // 筛选条件
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [diseases, setDiseases] = useState<string[]>([]);
+  const [diseaseCategories, setDiseaseCategories] = useState<string[]>([]);
+  const [diseaseSubcategories, setDiseaseSubcategories] = useState<string[]>([]);
   const [products, setProducts] = useState<string[]>([]);
   const [productInput, setProductInput] = useState('');
   const [provinces, setProvinces] = useState<string[]>([]);
@@ -144,7 +145,8 @@ export default function DataExportPanel() {
       const params: any = { format };
       if (dateFrom) params.date_from = dateFrom;
       if (dateTo) params.date_to = dateTo;
-      if (diseases.length) params.diseases = diseases;
+      if (diseaseCategories.length) params.disease_categories = diseaseCategories;
+      if (diseaseSubcategories.length) params.disease_subcategories = diseaseSubcategories;
       if (products.length) params.products = products;
       if (provinces.length) params.provinces = provinces;
       if (chains.length) params.chains = chains;
@@ -162,7 +164,7 @@ export default function DataExportPanel() {
     } catch {} finally {
       setPreviewLoading(false);
     }
-  }, [dateFrom, dateTo, diseases, products, provinces, chains, cities, confidence, isCommercial, format]);
+  }, [dateFrom, dateTo, diseaseCategories, diseaseSubcategories, products, provinces, chains, cities, confidence, isCommercial, format]);
 
   // 自动预览（防抖500ms）
   useEffect(() => {
@@ -179,7 +181,8 @@ export default function DataExportPanel() {
       const params: any = { format };
       if (dateFrom) params.date_from = dateFrom;
       if (dateTo) params.date_to = dateTo;
-      if (diseases.length) params.diseases = diseases;
+      if (diseaseCategories.length) params.disease_categories = diseaseCategories;
+      if (diseaseSubcategories.length) params.disease_subcategories = diseaseSubcategories;
       if (products.length) params.products = products;
       if (provinces.length) params.provinces = provinces;
       if (chains.length) params.chains = chains;
@@ -202,7 +205,6 @@ export default function DataExportPanel() {
 
       const totalRows = res.headers.get('X-Total-Rows');
       const fileSize = res.headers.get('X-File-Size');
-      const formatInfo: Record<string, string> = { csv: 'CSV', parquet: 'Parquet', csv_gz: 'CSV.GZ' };
 
       setDownloadProgress(
         `✅ 导出成功 • ${Number(totalRows).toLocaleString()} 行 • ${formatSize(Number(fileSize))}`
@@ -282,14 +284,36 @@ export default function DataExportPanel() {
             </div>
           </div>
 
-          {/* 疾病 */}
-          <MultiSelect
-            label="疾病"
-            options={filterOptions?.diseases || []}
-            selected={diseases}
-            onChange={setDiseases}
-            placeholder="选择疾病..."
-          />
+          {/* 疾病 - 两级筛选：大类 + 细分类 */}
+          <div className="export-field" style={{ gridColumn: '1 / -1' }}>
+            <div className="export-field-label">疾病</div>
+            <div className="export-disease-row">
+              <MultiSelect
+                label="疾病大类"
+                options={filterOptions?.disease_categories || []}
+                selected={diseaseCategories}
+                onChange={(cats) => {
+                  setDiseaseCategories(cats);
+                  // 大类变化时清空已选子类（避免子类不在新大类下）
+                  setDiseaseSubcategories([]);
+                }}
+                placeholder="选择疾病大类..."
+              />
+              <MultiSelect
+                label="疾病细分类"
+                options={
+                  diseaseCategories.length > 0 && filterOptions?.disease_subcategories_map
+                    ? diseaseCategories.flatMap((cat: string) =>
+                        filterOptions.disease_subcategories_map[cat] || []
+                      ).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
+                    : []
+                }
+                selected={diseaseSubcategories}
+                onChange={setDiseaseSubcategories}
+                placeholder={diseaseCategories.length > 0 ? "选择细分类..." : "请先选择大类"}
+              />
+            </div>
+          </div>
 
           {/* 产品 */}
           <div className="export-field">

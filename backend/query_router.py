@@ -6,6 +6,7 @@ v3: 新增 Prompt 拆解 Pipeline
 v3.1: 新增明细分页查询 + CSV 全部数据导出
 """
 
+import json as _json
 import re as _re
 import uuid
 from datetime import datetime
@@ -71,6 +72,107 @@ from sql_validator import (
 import re as _re
 
 router = APIRouter(prefix="/api", tags=["查询"])
+
+
+# ===== ATC Enrich（药品标准化字段补充） =====
+
+
+def _parse_drug_json(drug_json_str):
+    """解析药品 JSON 数组，返回药品名列表"""
+    if not drug_json_str or drug_json_str == '[]':
+        return []
+    try:
+        return _json.loads(drug_json_str)
+    except (_json.JSONDecodeError, TypeError):
+        return []
+
+
+def _lookup_atc(drug_name, mapping_df):
+    """查映射表，返回单个药品的 ATC 信息"""
+    if mapping_df is None or mapping_df.empty:
+        return None
+    match = mapping_df[mapping_df['原始药品名称'] == drug_name]
+    if len(match) == 0:
+        return None
+    row = match.iloc[0]
+    return {
+        'ATC编码': row.get('ATC编码', ''),
+        'ATC第3级': row.get('ATC第3级(药理亚组)', ''),
+        'ATC第1级': row.get('ATC第1级(解剖大类)', ''),
+        '中西药分类': row.get('中西药分类', ''),
+        '置信度': row.get('置信度', ''),
+    }
+
+
+def enrich_query_results(rows):
+    """对查询结果逐行补充 ATC 标准化字段
+    
+    处理药品字段：顾客点名药品、场景提及药品、订单药品、店员提及药品JSON、店员推荐药品JSON
+    映射表未加载时正常降级（不加列）
+    所有返回行保证有相同的列（缺ATC信息的行对应列设为None）
+    """
+    if not rows:
+        return rows
+
+    mapping_df = engine.get_drug_mapping_df()
+    if mapping_df.empty:
+        return rows  # 映射表未加载，原样返回
+
+    drug_fields = ['顾客点名药品', '场景提及药品', '订单药品', '店员提及药品JSON', '店员推荐药品JSON']
+    # 所有可能的 ATC 后缀列名
+    atc_suffixes = ['_ATC编码', '_ATC分类', '_ATC大类', '_中西药', '_置信度', '_ATC映射']
+
+    enriched = []
+    # 第一遍：收集实际存在的 ATC 列名
+    all_atc_cols = set()
+    for row in rows:
+        for field in drug_fields:
+            if field not in row:
+                continue
+            raw_val = str(row[field]) if row[field] is not None else '[]'
+            drug_names = _parse_drug_json(raw_val)
+            if not drug_names:
+                continue
+            # 只要有药品数据，可能添加的ATC列
+            for suffix in atc_suffixes:
+                all_atc_cols.add(f'{field}{suffix}')
+
+    # 第二遍：每行统一补全列
+    for row in rows:
+        new_row = dict(row)
+        for field in drug_fields:
+            if field not in row:
+                continue
+            raw_val = str(row[field]) if row[field] is not None else '[]'
+            drug_names = _parse_drug_json(raw_val)
+            if not drug_names:
+                continue
+
+            primary_drug = drug_names[0]
+            atc_info = _lookup_atc(primary_drug, mapping_df)
+            if atc_info and atc_info.get('ATC编码'):
+                new_row[f'{field}_ATC编码'] = atc_info['ATC编码']
+                new_row[f'{field}_ATC分类'] = atc_info['ATC第3级']
+                new_row[f'{field}_ATC大类'] = atc_info['ATC第1级']
+                new_row[f'{field}_中西药'] = atc_info['中西药分类']
+                new_row[f'{field}_置信度'] = atc_info['置信度']
+
+            all_atc = []
+            for dn in drug_names:
+                info = _lookup_atc(dn, mapping_df)
+                if info and info.get('ATC编码'):
+                    all_atc.append(f'{dn}→{info["ATC编码"]}')
+            if all_atc:
+                new_row[f'{field}_ATC映射'] = '; '.join(all_atc)
+
+        # 补全缺失的 ATC 列（确保所有行有相同列）
+        for col in all_atc_cols:
+            if col not in new_row:
+                new_row[col] = None
+
+        enriched.append(new_row)
+
+    return enriched
 
 
 # ===== SQL 交叉验证（新增） =====
@@ -545,6 +647,8 @@ def query(req: QueryRequest, username: str = Depends(get_current_user)):
     if use_pagination:
         page_result = _execute_paginated(sql, req.page, req.page_size)
         rows = page_result["rows"]
+        # ATC Enrich：补充药品标准化字段
+        rows = enrich_query_results(rows)
         elapsed = page_result["elapsed_ms"]
         pagination_info = page_result["pagination"]
         sql = page_result["sql_used"]  # 更新为实际执行的 SQL（含 LIMIT/OFFSET）
@@ -561,6 +665,8 @@ def query(req: QueryRequest, username: str = Depends(get_current_user)):
             )
 
         rows = result["rows"]
+        # ATC Enrich：补充药品标准化字段
+        rows = enrich_query_results(rows)
         elapsed = result["elapsed_ms"]
 
     # ---- 空结果检测 ----
@@ -821,6 +927,8 @@ def _query_fallback(
     if use_pagination:
         page_result = _execute_paginated(sql, page, page_size)
         rows = page_result["rows"]
+        # ATC Enrich：补充药品标准化字段
+        rows = enrich_query_results(rows)
         elapsed = page_result["elapsed_ms"]
         pagination_info = page_result["pagination"]
         sql = page_result["sql_used"]
@@ -836,6 +944,8 @@ def _query_fallback(
             )
 
         rows = result["rows"]
+        # ATC Enrich：补充药品标准化字段
+        rows = enrich_query_results(rows)
         elapsed = result["elapsed_ms"]
 
     is_empty = not rows or (
@@ -926,6 +1036,8 @@ def query_sql(req: SqlQueryRequest, username: str = Depends(get_current_user)):
         return QueryResponse(success=False, error=result["error"])
 
     rows = result["rows"]
+    # ATC Enrich：补充药品标准化字段
+    rows = enrich_query_results(rows)
     elapsed = result["elapsed_ms"]
 
     # ---- 数据范围提示（空结果时） ----

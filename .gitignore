@@ -38,3 +38,6 @@ regression_reports/
 # 操作系统
 .DS_Store
 Thumbs.db
+
+# 带时间戳的备份文件
+*.bak.*

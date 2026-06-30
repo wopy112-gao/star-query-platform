@@ -36,6 +36,18 @@ class Settings:
         "/root/呼吸类主数据V20260508_clean.xlsx"
     )
 
+    # ---- 药品映射表 ----
+    MAPPING_PATH: str = os.getenv(
+        "MAPPING_PATH",
+        "/tmp/star-mapping/results/星宝药品ATC映射表_v1.xlsx"
+    )
+
+    # ---- 带 ATC 的 Parquet 数据源（Phase 2-3b 后启用） ----
+    DATA_PATH_WITH_ATC: str = os.getenv(
+        "DATA_PATH_WITH_ATC",
+        "/root/All_data_ch_full_with_atc.parquet"
+    )
+
     # ---- 查询限制 ----
     MAX_ROWS: int = 500          # 结果行数上限
     QUERY_TIMEOUT_SEC: int = 10  # 查询超时秒数

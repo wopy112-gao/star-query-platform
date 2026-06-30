@@ -1,5 +1,6 @@
 """星宝语料场景查询系统 — DuckDB 查询引擎"""
 
+import os
 import re
 import time
 import threading
@@ -75,6 +76,8 @@ class DuckDbEngine:
     _conn: Optional[duckdb.DuckDBPyConnection] = None
     _loaded: bool = False
     _row_count: int = 0
+    _mapping_loaded: bool = False
+    _mapping_row_count: int = 0
     _lock = threading.Lock()
 
     def __new__(cls):
@@ -121,6 +124,9 @@ class DuckDbEngine:
 
             self._loaded = True
 
+            # 加载药品映射表
+            self.load_mapping_table()
+
             info = self._get_info()
             print(f"[DuckDB] 加载完成: {info['total_rows']} 行 × {info['total_cols']} 列")
             return info
@@ -128,7 +134,7 @@ class DuckDbEngine:
     def _get_info(self) -> dict:
         """获取数据源信息"""
         if not self._conn:
-            return {"total_rows": 0, "total_cols": 0, "columns": []}
+            return {"total_rows": 0, "total_cols": 0, "columns": [], "mapping": None}
 
         df = self._conn.execute("SELECT * FROM data LIMIT 1").fetchdf()
         cols = []
@@ -143,11 +149,62 @@ class DuckDbEngine:
                 "sample": sample,
             })
 
-        return {
+        info = {
             "total_rows": self._row_count,
             "total_cols": len(df.columns),
             "columns": cols,
+            "mapping": {
+                "loaded": self._mapping_loaded,
+                "rows": self._mapping_row_count,
+            } if self._mapping_loaded else None,
         }
+        return info
+
+    def load_mapping_table(self, mapping_path: str = None) -> dict:
+        """加载药品ATC映射表到 DuckDB，注册为 drug_mapping 视图"""
+        if mapping_path is None:
+            mapping_path = getattr(
+                settings, "MAPPING_PATH",
+                "/tmp/star-mapping/results/星宝药品ATC映射表_v1.xlsx"
+            )
+
+        if not self._conn:
+            return {"loaded": False, "rows": 0}
+
+        if not os.path.exists(mapping_path):
+            print(f"[映射表] 文件不存在: {mapping_path}，跳过加载")
+            return {"loaded": False, "rows": 0}
+
+        try:
+            df = pd.read_excel(mapping_path)
+            self._conn.register("drug_mapping", df)
+            self._mapping_row_count = len(df)
+            self._mapping_loaded = True
+
+            matched_rate = round(
+                (df["置信度"] != "待人工审核").sum() / len(df) * 100, 1
+            ) if "置信度" in df.columns else 0
+
+            info = {
+                "loaded": True,
+                "rows": self._mapping_row_count,
+                "columns": df.columns.tolist(),
+                "matched_rate": matched_rate,
+            }
+            print(f"[映射表] 加载完成: {info}")
+            return info
+        except Exception as e:
+            print(f"[映射表] 加载失败: {e}")
+            return {"loaded": False, "rows": 0, "error": str(e)}
+
+    def get_drug_mapping_df(self) -> pd.DataFrame:
+        """返回 drug_mapping 的 pandas DataFrame"""
+        if self._mapping_loaded and self._conn:
+            try:
+                return self._conn.execute("SELECT * FROM drug_mapping").fetchdf()
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
 
     def execute(self, sql: str) -> dict:
         """

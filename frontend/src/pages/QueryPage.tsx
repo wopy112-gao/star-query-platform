@@ -391,7 +391,7 @@ function ChartView({ option }: { option: any }) {
 
 // ===== 主页面 =====
 export default function QueryPage() {
-  const [username] = useState(getUsername());
+  const [username] = useState<string>(getUsername() ?? '');
   const [templates, setTemplates] = useState<Template[]>([]);
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);

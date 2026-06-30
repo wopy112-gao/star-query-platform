@@ -51,7 +51,9 @@ class DataExportParams(BaseModel):
     """数据导出筛选参数"""
     date_from: str = Field("", description="起始月份 YYYY-MM")
     date_to: str = Field("", description="结束月份 YYYY-MM")
-    diseases: list[str] = Field(default_factory=list, description="疾病名称列表")
+    diseases: list[str] = Field(default_factory=list, description="疾病名称列表（完整名称，兼容旧版）")
+    disease_categories: list[str] = Field(default_factory=list, description="疾病大类列表（'-'之前的部分）")
+    disease_subcategories: list[str] = Field(default_factory=list, description="疾病细分类列表（'-'之后的部分）")
     products: list[str] = Field(default_factory=list, description="产品名称列表")
     provinces: list[str] = Field(default_factory=list, description="省份列表")
     chains: list[str] = Field(default_factory=list, description="连锁列表")
@@ -86,10 +88,20 @@ def _build_where_clause(params: DataExportParams) -> str:
         # 月份的最后一天
         where_parts.append(f"CAST(ydate AS DATE) <= DATE_TRUNC('month', DATE '{params.date_to}-01') + INTERVAL '1 month' - INTERVAL '1 day'")
 
-    # 2. 疾病名称
+    # 2. 疾病名称（完整名称，兼容旧版）
     if params.diseases:
         escaped = [f"'{d.replace(chr(39), chr(39)+chr(39))}'" for d in params.diseases]
         where_parts.append(f"疾病名称 IN ({', '.join(escaped)})")
+
+    # 2a. 疾病大类（'-'之前的部分）
+    if params.disease_categories:
+        escaped = [f"'{c.replace(chr(39), chr(39)+chr(39))}'" for c in params.disease_categories]
+        where_parts.append(f"SPLIT_PART(疾病名称, '-', 1) IN ({', '.join(escaped)})")
+
+    # 2b. 疾病细分类（'-'之后的部分）
+    if params.disease_subcategories:
+        escaped = [f"'{s.replace(chr(39), chr(39)+chr(39))}'" for s in params.disease_subcategories]
+        where_parts.append(f"SPLIT_PART(疾病名称, '-', 2) IN ({', '.join(escaped)})")
 
     # 3. 产品 — 匹配 顾客点名药品 / 场景提及药品 / 订单药品 / 店员推荐药品JSON / 店员提及药品JSON
     if params.products:
@@ -134,11 +146,68 @@ def _build_where_clause(params: DataExportParams) -> str:
     return "WHERE " + " AND ".join(where_parts)
 
 
+# ---- ATC Enrich 药品字段列表（导出用） ----
+_DRUG_FIELDS_FOR_EXPORT = [
+    ('场景提及药品', 'sm'),
+    ('顾客点名药品', 'cd'),
+    ('订单药品', 'dd'),
+    ('店员提及药品JSON', 'djtj'),
+    ('店员推荐药品JSON', 'djtt'),
+]
+
+
 def _build_full_sql(where_clause: str) -> str:
     """构建完整的 SELECT * SQL"""
     if where_clause:
         return f"SELECT * FROM data {where_clause}"
     return "SELECT * FROM data"
+
+
+def _enrich_dataframe(df, mapping_df):
+    """对 DataFrame 向量化补充 ATC 标准化字段（导出用）"""
+    import json as _json
+    if mapping_df.empty:
+        return df
+
+    # 预提取映射表的 ATC 编码字典（药品名→ATC编码）
+    atc_map = dict(zip(mapping_df['原始药品名称'].tolist(), mapping_df['ATC编码'].tolist()))
+
+    def _first_drug(val):
+        if not val or val == '[]':
+            return None
+        try:
+            drugs = _json.loads(str(val))
+            return str(drugs[0]).strip() if drugs else None
+        except (_json.JSONDecodeError, TypeError):
+            return None
+
+    def _all_drugs_map(val):
+        if not val or val == '[]':
+            return ''
+        try:
+            drugs = _json.loads(str(val))
+            parts = []
+            for dn in drugs:
+                dn = str(dn).strip()
+                if not dn:
+                    continue
+                code = atc_map.get(dn, 'nan')
+                parts.append(f"{dn}→{code}")
+            return '; '.join(parts)
+        except (_json.JSONDecodeError, TypeError):
+            return ''
+
+    for field, _ in _DRUG_FIELDS_FOR_EXPORT:
+        if field not in df.columns:
+            continue
+        # 取第一个药品名
+        first_drugs = df[field].apply(_first_drug)
+        # 查 ATC 编码
+        df[f'{field}_ATC编码'] = first_drugs.map(atc_map)
+        # 全部药品名映射列表
+        df[f'{field}_ATC映射'] = df[field].apply(_all_drugs_map)
+
+    return df
 
 
 def _generate_filename(params: DataExportParams) -> str:
@@ -171,9 +240,19 @@ def _generate_filename(params: DataExportParams) -> str:
 
 # ===== 路由 =====
 
+# ===== 筛选选项缓存（1小时失效，避免每次全表扫描） =====
+_FILTER_OPTIONS_CACHE: dict = {"data": None, "timestamp": 0.0}
+_CACHE_TTL_SEC = 3600  # 1小时
+
+
 @router.get("/filter-options")
 def get_filter_options(username: str = Depends(require_export_permission)):
-    """获取数据导出筛选字段的可选值列表"""
+    """获取数据导出筛选字段的可选值列表（缓存1小时）"""
+    import time as _time
+    now = _time.time()
+    if _FILTER_OPTIONS_CACHE["data"] is not None and now - _FILTER_OPTIONS_CACHE["timestamp"] < _CACHE_TTL_SEC:
+        return _FILTER_OPTIONS_CACHE["data"]
+
     try:
         import duckdb
         conn: duckdb.DuckDBPyConnection = engine.conn
@@ -203,6 +282,34 @@ def get_filter_options(username: str = Depends(require_export_permission)):
         diseases = _distinct("疾病名称")
         cities = _distinct("城市")
 
+        # 疾病大类 + 细分类映射
+        disease_categories = []
+        disease_subcategories_map = {}
+        try:
+            # 获取所有大类
+            cat_rows = conn.execute(
+                "SELECT DISTINCT SPLIT_PART(疾病名称, '-', 1) AS cat "
+                "FROM data WHERE 疾病名称 IS NOT NULL AND 疾病名称 != '' "
+                "AND CONTAINS(疾病名称, '-') "
+                "ORDER BY cat"
+            ).fetchall()
+            disease_categories = [r[0] for r in cat_rows]
+
+            # 获取每个大类下的细分类
+            for cat in disease_categories:
+                safe_cat = cat.replace("'", "''")
+                sub_rows = conn.execute(
+                    f"SELECT DISTINCT SPLIT_PART(疾病名称, '-', 2) AS sub "
+                    f"FROM data "
+                    f"WHERE SPLIT_PART(疾病名称, '-', 1) = '{safe_cat}' "
+                    f"ORDER BY sub"
+                ).fetchall()
+                disease_subcategories_map[cat] = [r[0] for r in sub_rows]
+        except Exception as e:
+            print(f"[数据导出] 疾病分类查询失败: {e}")
+            disease_categories = []
+            disease_subcategories_map = {}
+
         min_date = _single(
             "SELECT MIN(CAST(ydate AS DATE)) FROM data "
             "WHERE ydate IS NOT NULL "
@@ -222,13 +329,15 @@ def get_filter_options(username: str = Depends(require_export_permission)):
         total_rows = _single("SELECT COUNT(*) FROM data") or 0
         columns = [col["name"] for col in SCHEMA_KNOWLEDGE["columns"]]
 
-        return {
+        result = {
             "success": True,
             "data": {
                 "provinces": provinces,
                 "chains": chains,
                 "diseases": diseases,
                 "cities": cities,
+                "disease_categories": disease_categories,
+                "disease_subcategories_map": disease_subcategories_map,
                 "date_range": {
                     "min_date": str(min_date)[:7] if min_date else "",
                     "max_date": str(max_date)[:7] if max_date else "",
@@ -247,6 +356,11 @@ def get_filter_options(username: str = Depends(require_export_permission)):
                 "columns": columns,
             },
         }
+        # 写入缓存
+        import time as _time2
+        _FILTER_OPTIONS_CACHE["data"] = result
+        _FILTER_OPTIONS_CACHE["timestamp"] = _time2.time()
+        return result
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -341,7 +455,7 @@ def export_data(req: DataExportParams, username: str = Depends(require_export_pe
 
         where = _build_where_clause(req)
 
-        # 构建完整 SELECT * SQL
+        # 构建带 ATC 字段的导出 SQL
         full_sql = _build_full_sql(where)
 
         # ---- 先跑 COUNT（用于记录和预估反馈） ----
@@ -414,6 +528,38 @@ def export_data(req: DataExportParams, username: str = Depends(require_export_pe
                 status_code=500,
                 content={"success": False, "error": f"导出失败: {str(e)}"},
             )
+
+        # ---- ATC Enrich（Python 端补充药品标准化字段） ----
+        try:
+            mapping_df = engine.get_drug_mapping_df()
+            if not mapping_df.empty:
+                enriched_path = out_path + "_enriched"
+                if req.format == "csv" or req.format == "csv_gz":
+                    # CSV 格式：逐块 enrich 避免全量加载内存
+                    import pandas as pd
+                    chunk_size = 50000
+                    df_chunks = pd.read_csv(final_path, chunksize=chunk_size, dtype=str, encoding='utf-8')
+                    first_chunk = True
+                    for chunk in df_chunks:
+                        enriched_chunk = _enrich_dataframe(chunk, mapping_df)
+                        enriched_chunk.to_csv(
+                            enriched_path if first_chunk else enriched_path,
+                            mode='w' if first_chunk else 'a',
+                            index=False,
+                            header=first_chunk,
+                            encoding='utf-8-sig',
+                        )
+                        first_chunk = False
+                    # 替换原文件
+                    os.replace(enriched_path, final_path)
+                elif req.format == "parquet":
+                    # Parquet 格式：全量读入后 enrich
+                    import pandas as pd
+                    df = pd.read_parquet(final_path)
+                    enriched_df = _enrich_dataframe(df, mapping_df)
+                    enriched_df.to_parquet(final_path, compression='zstd', index=False)
+        except Exception as e:
+            print(f"[数据导出] ATC Enrich 失败（降级为原始数据）: {e}")
 
         file_size = os.path.getsize(final_path)
         elapsed = (time.time() - start) * 1000
