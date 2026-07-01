@@ -18,7 +18,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 app = FastAPI(
     title="星宝语料场景查询系统",
     description="基于自然语言的星宝语料场景数据查询与可视化系统",
-    version="3.2.0",
+    version="3.6.0",
 )
 
 # CORS（开发时允许前端 5173 端口）
