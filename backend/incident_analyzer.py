@@ -1,3 +1,5 @@
+from __future__ import annotations
+import re
 """星宝数据平台 — 反馈事件分析器
 
 扫描 feedback_review/ 目录中的 pending 事件，分类根因并生成修复方案。
@@ -6,7 +8,6 @@
 使用方式：from incident_analyzer import scan_and_analyze; proposals = scan_and_analyze()
 """
 
-from __future__ import annotations
 
 import json
 import os
@@ -24,13 +25,13 @@ _FEEDBACK_DIR_ENV = os.environ.get("FEEDBACK_REVIEW_DIR")
 _FEEDBACK_DIR = (
     Path(_FEEDBACK_DIR_ENV)
     if _FEEDBACK_DIR_ENV
-    else Path(os.path.expanduser("~/.lightclaw/workspace/feedback_review"))
+    else Path(os.path.expanduser("feedback_review"))
 )
 _PROPOSAL_DIR_ENV = os.environ.get("FIX_PROPOSALS_DIR")
 _PROPOSAL_DIR = (
     Path(_PROPOSAL_DIR_ENV)
     if _PROPOSAL_DIR_ENV
-    else Path(os.path.expanduser("~/.lightclaw/workspace/fix_proposals"))
+    else Path(os.path.expanduser("fix_proposals"))
 )
 _PROPOSAL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -582,7 +583,6 @@ def _apply_few_shot(change: dict) -> str:
 
         # 在最后一个示例后面插入新示例
         # 找通用统计或同分类的末尾
-        import re as _re
         # 找 "通用统计" 分类的末尾，在其后插入
         # 通用统计是第一条，在所有示例分类之后添加
         # 简单策略：在最后一个 ], 前面插入

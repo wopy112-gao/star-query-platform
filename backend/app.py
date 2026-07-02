@@ -25,7 +25,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -118,7 +118,7 @@ if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
 async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
-        content={"success": False, "error": f"服务器内部错误: {str(exc)}"},
+        content={"success": False, "error": f"服务器内部错误"},
     )
 
 

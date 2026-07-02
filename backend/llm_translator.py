@@ -26,26 +26,13 @@ if not kb.is_loaded:
     kb.load()
 
 # ============================================================
+
+from schema_ddl import get_ddl_string
+
+
+# ============================================================
 # DDL 懒加载
 # ============================================================
-
-_DDL_CACHE = None
-
-def _get_ddl() -> str:
-    """获取 DDL 字符串（懒加载 + 缓存）"""
-    global _DDL_CACHE
-    if _DDL_CACHE is None:
-        try:
-            from schema_ddl import DDL_COMPACT
-            _DDL_CACHE = DDL_COMPACT
-        except ImportError:
-            from schema_knowledge import SCHEMA_KNOWLEDGE
-            lines = [f"CREATE TABLE {SCHEMA_KNOWLEDGE['table_name']} ("]
-            for col in SCHEMA_KNOWLEDGE["columns"]:
-                lines.append(f"  {col['name']} {col['type']},")
-            lines.append(");")
-            _DDL_CACHE = "\n".join(lines)
-    return _DDL_CACHE
 
 
 # ============================================================

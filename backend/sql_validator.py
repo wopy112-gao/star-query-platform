@@ -1,3 +1,4 @@
+import re
 """星宝语料场景查询系统 — SQL 质量门禁
 
 包含两类校验：
@@ -477,7 +478,6 @@ def validate_intent_consistency(intent: QueryIntent, sql: str) -> list[str]:
             expected_condition = "交易是否达成"
             expected_value = "'是'"
         # 用灵活匹配处理 SQL 中可能的空格差异（交易是否达成 = '是' vs 交易是否达成='是'）
-        import re
         if not re.search(rf"交易是否达成\s*=\s*{expected_value}", sql):
             warnings.append(
                 f"成交口径缺失：聚合方式为「{intent.agg}」，"
@@ -521,37 +521,3 @@ def validate_intent_consistency(intent: QueryIntent, sql: str) -> list[str]:
 
     return warnings
 
-
-def _extract_group_by_columns(sql: str) -> list[str]:
-    """从 SQL 中提取 GROUP BY 涉及的列名（与 validate_dimensions 共享）"""
-    sql_upper = sql.upper()
-
-    match = re.search(r"\bGROUP\s+BY\b", sql_upper)
-    if not match:
-        return []
-
-    after_group = sql[match.end():]
-    end_match = re.search(
-        r"\b(ORDER\s+BY|LIMIT|HAVING|UNION|INTERSECT|EXCEPT)\b",
-        after_group,
-        flags=re.IGNORECASE,
-    )
-    if end_match:
-        after_group = after_group[:end_match.start()]
-
-    columns_text = after_group.strip().rstrip(";").strip()
-    if not columns_text:
-        return []
-
-    cols = []
-    for col_part in columns_text.split(","):
-        col_part = col_part.strip()
-        col_part = re.split(r"\s+AS\s+", col_part, flags=re.IGNORECASE)[0].strip()
-        func_match = re.match(r"(\w+)\((.+)\)", col_part)
-        if func_match:
-            col_part = func_match.group(2).strip()
-        col_part = col_part.strip('"').strip("`").strip("'").strip("[]")
-        if col_part and col_part not in cols:
-            cols.append(col_part)
-
-    return cols

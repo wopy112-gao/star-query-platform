@@ -154,8 +154,8 @@ def validate_with_anchor(
                                     f"交叉验证：各维度之和({dim_sum:.0f})与全量({total:.0f})偏差 {diff_pct:.1f}%，"
                                     f"可能统计口径不一致"
                                 )
-            except Exception as e:
-                print(f"[交叉验证] 锚点查询失败: {e}")
+                except Exception as e:
+                    print("[????] ??????: " + str(e))
 
     # ---- 检查2：筛选条件验证 ----
     # 适用场景：有 WHERE 条件的查询

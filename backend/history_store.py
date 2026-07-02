@@ -107,26 +107,28 @@ def _migrate_from_json():
 
 
 def _enforce_limit(username: str):
-    """强制每个用户的历史记录不超过上限（保留最新的 N 条）"""
+    """?????????????????????? N ??
+
+    ??????? DELETE + subquery ????????????
+    """
     conn = _get_conn()
     try:
-        while True:
-            row = conn.execute(
-                """SELECT COUNT(*) AS cnt FROM query_history WHERE username = ?""",
-                (username,),
-            ).fetchone()
-            if row["cnt"] <= MAX_HISTORY_PER_USER:
-                break
-            # 删除最旧的一条
+        # ?????????
+        excess = conn.execute(
+            "SELECT MAX(0, COUNT(*) - ?) FROM query_history WHERE username = ?",
+            (MAX_HISTORY_PER_USER, username),
+        ).fetchone()[0]
+        
+        if excess > 0:
             conn.execute(
                 """DELETE FROM query_history
-                   WHERE id = (
+                   WHERE id IN (
                        SELECT id FROM query_history
                        WHERE username = ?
                        ORDER BY created_at ASC
-                       LIMIT 1
+                       LIMIT ?
                    )""",
-                (username,),
+                (username, username, excess),
             )
             conn.commit()
     finally:

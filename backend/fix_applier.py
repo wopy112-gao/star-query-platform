@@ -1,3 +1,5 @@
+from __future__ import annotations
+import re
 """星宝数据平台 — 修复方案自动应用器（fix_applier）
 
 职责：
@@ -11,7 +13,6 @@
 使用：python3 fix_applier.py
 """
 
-from __future__ import annotations
 
 import json
 import os
@@ -753,7 +754,7 @@ class FixApplier:
         """判断两条 SQL 是否等价（忽略空白差异）"""
         if not sql1 or not sql2:
             return False
-        return "".join(sql1.split()) == "".join(sql2.split())
+        return "".join(sql1.upper().split()) == "".join(sql2.upper().split())
 
     @staticmethod
     def _warning_still_present(sql: str, warning: str) -> bool:
@@ -773,7 +774,6 @@ class FixApplier:
         # 模式: 自相矛盾
         if "自相矛盾" in warning_lower:
             # 检查是否有 NOT LIKE ... AND LIKE ... 模式
-            import re
             likes = re.findall(r"LIKE\s+'%([^']+)%'", sql, re.IGNORECASE)
             not_likes = re.findall(r"NOT\s+LIKE\s+'%([^']+)%'", sql, re.IGNORECASE)
             if set(likes) & set(not_likes):

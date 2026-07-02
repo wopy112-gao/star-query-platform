@@ -1,10 +1,11 @@
+from __future__ import annotations
+import re
 """星宝语料场景查询系统 — SQL 渲染引擎
 
 负责将模板 + 结构化意图参数渲染为最终 SQL。
 处理条件组合、维度字段映射、聚合公式替换。
 """
 
-from __future__ import annotations
 
 from typing import Optional
 
@@ -345,7 +346,6 @@ class SQLRenderer:
         返回完整的 SQL 条件字符串（不含 WHERE 前缀），如:
             ydate >= CURRENT_DATE - INTERVAL '7' DAY
         """
-        import re
 
         v = value.strip()
 

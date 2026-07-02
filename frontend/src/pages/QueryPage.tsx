@@ -72,9 +72,6 @@ function renderSourceTag(source: string): string {
   return `${info.icon} ${info.label}`;
 }
 
-function renderIntentSource(source: string): string {
-  const info = SOURCE_LABELS[source] || { icon: '🤖', label: 'Moss 翻译' };
-  return `${info.icon} ${info.label}`;
 }
 
 // ===== 数据洞察看板 =====
@@ -687,7 +684,7 @@ export default function QueryPage() {
                   <div className="intent-card-header">
                     <span className="intent-card-icon">🧠</span>
                     <span className="intent-card-title">您查询的是</span>
-                    <span className="intent-card-badge">{renderIntentSource(result.intent_info.route_source)}</span>
+                    <span className="intent-card-badge">{renderSourceTag(result.intent_info.route_source)}</span>
                   </div>
                   <div className="intent-card-body">
                     <span className="intent-chip" title={PATTERN_DESCRIPTIONS[result.intent_info.query_pattern] || ''}>

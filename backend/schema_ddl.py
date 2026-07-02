@@ -1,4 +1,4 @@
-"""星宝语料场景查询系统 — Schema DDL 生成器
+﻿"""星宝语料场景查询系统 — Schema DDL 生成器
 
 从 SCHEMA_KNOWLEDGE 自动生成 DuckDB DDL 字符串。
 作为 LLM Prompt 的 Schema 描述（代替旧版自然语言字段列表）。
@@ -8,13 +8,46 @@
 
 from schema_knowledge import SCHEMA_KNOWLEDGE
 
+# ============================================================
+# 公共 DDL 懒加载（供 llm_translator.py 和 query_intent.py 复用）
+# ============================================================
+
+_DDL_CACHE = None
+
+def get_ddl_string(compact: bool = False) -> str:
+    """获取 DDL 字符串（懒加载 + 缓存）
+
+    Args:
+        compact: 是否返回精简版（不含注释，节省 tokens）
+
+    Returns:
+        DDL 字符串
+    """
+    global _DDL_CACHE
+    if _DDL_CACHE is None:
+        try:
+            _DDL_CACHE = DDL_COMPACT if compact else DDL
+            _DDL_CACHE = ddl_var
+        except ImportError:
+            # fallback: 从 SCHEMA_KNOWLEDGE 动态生成
+            lines = [f"CREATE TABLE {SCHEMA_KNOWLEDGE['table_name']} ("]
+            for col in SCHEMA_KNOWLEDGE["columns"]:
+                comment = "" if compact else f" -- {col.get('description', '')}"
+                lines.append(f"  {col['name']} {col['type']}{comment}")
+            lines.append(");")
+            _DDL_CACHE = "\n".join(lines)
+    return _DDL_CACHE
+
+
+# ============================================================
+# 原有功能保持不变
+# ============================================================
 
 # 类型映射（Schema 知识中的类型 → DDL 显示类型）
-# 保留原类型，仅 VARCHAR[] 等特殊情况做增强
 TYPE_DISPLAY = {
     "BIGINT": "BIGINT",
     "VARCHAR": "VARCHAR",
-    "BIGINT | VARCHAR": "BIGINT",  # 优先用 BIGINT
+    "BIGINT | VARCHAR": "BIGINT",
 }
 
 # 字段注释（增强描述）
@@ -42,24 +75,16 @@ FIELD_COMMENTS = {
 
 
 def _col_name_to_ddl(name: str) -> str:
-    """将字段名转为合法的 DuckDB 列名
-
-    特殊处理：包含空格/特殊字符的字段名不需要反引号，
-    DuckDB 支持中文字段名直接使用。
-    """
     return name
 
 
 def _get_col_type(raw_type: str) -> str:
-    """获取字段 DDL 类型"""
     return TYPE_DISPLAY.get(raw_type, raw_type)
 
 
 def _get_col_comment(name: str) -> str:
-    """获取字段注释（优先用增强描述，否则用 schema 中的 description）"""
     if name in FIELD_COMMENTS:
         return FIELD_COMMENTS[name]
-    # fallback 到 schema_knowledge 中的 description
     for col in SCHEMA_KNOWLEDGE["columns"]:
         if col["name"] == name:
             return col["description"]
@@ -67,53 +92,26 @@ def _get_col_comment(name: str) -> str:
 
 
 def generate_ddl(include_comments: bool = True) -> str:
-    """生成 DuckDB CREATE TABLE DDL 字符串
-
-    Args:
-        include_comments: 是否包含列注释（LLM Prompt 用，友好但较长）
-
-    Returns:
-        DDL 字符串，如:
-        CREATE TABLE data (
-            场景ID BIGINT,      -- 每个独立购药场景的唯一ID
-            疾病名称 VARCHAR,    -- 疾病全称
-            ...
-        );
-    """
     lines = [f"CREATE TABLE {SCHEMA_KNOWLEDGE['table_name']} ("]
-
     col_lines = []
     for col in SCHEMA_KNOWLEDGE["columns"]:
         name = _col_name_to_ddl(col["name"])
         dtype = _get_col_type(col["type"])
         comment = _get_col_comment(col["name"]) if include_comments else ""
-
         if comment:
             col_lines.append(f"  {name:18s} {dtype:10s} -- {comment}")
         else:
             col_lines.append(f"  {name:18s} {dtype}")
-
     lines.append(",\n".join(col_lines))
     lines.append(");")
-
     return "\n".join(lines)
 
 
 def generate_ddl_compact() -> str:
-    """生成精简版 DDL（不含注释，节省 tokens）
-
-    用于 LLM Prompt 中当 tokens 紧张时使用。
-    """
     return generate_ddl(include_comments=False)
 
 
 def get_column_descriptions() -> str:
-    """生成字段描述概览（比 DDL 更简短，用于非 SQL 场景）
-
-    返回格式:
-    ydate: 日期 yyyy-MM-dd
-    省份: 药店所在省份
-    """
     parts = []
     for col in SCHEMA_KNOWLEDGE["columns"]:
         comment = _get_col_comment(col["name"])

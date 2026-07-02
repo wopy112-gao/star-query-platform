@@ -105,77 +105,75 @@ def _lookup_atc(drug_name, mapping_df):
 
 
 def enrich_query_results(rows):
-    """对查询结果逐行补充 ATC 标准化字段
+    """????????? ATC ????????????
     
-    处理药品字段：顾客点名药品、场景提及药品、订单药品、店员提及药品JSON、店员推荐药品JSON
-    映射表未加载时正常降级（不加列）
-    所有返回行保证有相同的列（缺ATC信息的行对应列设为None）
+    ?????????????? dict?O(1) ??
     """
     if not rows:
         return rows
 
     mapping_df = engine.get_drug_mapping_df()
     if mapping_df.empty:
-        return rows  # 映射表未加载，原样返回
+        return rows
 
-    drug_fields = ['顾客点名药品', '场景提及药品', '订单药品', '店员提及药品JSON', '店员推荐药品JSON']
-    # 所有可能的 ATC 后缀列名
-    atc_suffixes = ['_ATC编码', '_ATC分类', '_ATC大类', '_中西药', '_置信度', '_ATC映射']
+    drug_fields = ['??????', '??????', '????', '??????JSON', '??????JSON']
+    atc_suffixes = ['_ATC??', '_ATC??', '_ATC??', '_???', '_???', '_ATC??']
+
+    # ???????? dict
+    drug_to_atc = {}
+    for _, row in mapping_df.iterrows():
+        orig_name = row.get('??????', '')
+        if orig_name:
+            drug_to_atc[orig_name] = {
+                'ATC??': row.get('ATC??', ''),
+                'ATC?3?': row.get('ATC?3?(????)', ''),
+                'ATC?1?': row.get('ATC?1?(????)', ''),
+                '?????': row.get('?????', ''),
+                '???': row.get('???', ''),
+            }
 
     enriched = []
-    # 第一遍：收集实际存在的 ATC 列名
     all_atc_cols = set()
     for row in rows:
         for field in drug_fields:
             if field not in row:
                 continue
             raw_val = str(row[field]) if row[field] is not None else '[]'
-            drug_names = _parse_drug_json(raw_val)
+            try:
+                drug_names = json.loads(raw_val)
+            except (json.JSONDecodeError, TypeError):
+                continue
             if not drug_names:
                 continue
-            # 只要有药品数据，可能添加的ATC列
             for suffix in atc_suffixes:
                 all_atc_cols.add(f'{field}{suffix}')
 
-    # 第二遍：每行统一补全列
     for row in rows:
         new_row = dict(row)
         for field in drug_fields:
             if field not in row:
                 continue
             raw_val = str(row[field]) if row[field] is not None else '[]'
-            drug_names = _parse_drug_json(raw_val)
+            try:
+                drug_names = json.loads(raw_val)
+            except (json.JSONDecodeError, TypeError):
+                continue
             if not drug_names:
                 continue
 
             primary_drug = drug_names[0]
-            atc_info = _lookup_atc(primary_drug, mapping_df)
-            if atc_info and atc_info.get('ATC编码'):
-                new_row[f'{field}_ATC编码'] = atc_info['ATC编码']
-                new_row[f'{field}_ATC分类'] = atc_info['ATC第3级']
-                new_row[f'{field}_ATC大类'] = atc_info['ATC第1级']
-                new_row[f'{field}_中西药'] = atc_info['中西药分类']
-                new_row[f'{field}_置信度'] = atc_info['置信度']
-
-            all_atc = []
-            for dn in drug_names:
-                info = _lookup_atc(dn, mapping_df)
-                if info and info.get('ATC编码'):
-                    all_atc.append(f'{dn}→{info["ATC编码"]}')
-            if all_atc:
-                new_row[f'{field}_ATC映射'] = '; '.join(all_atc)
-
-        # 补全缺失的 ATC 列（确保所有行有相同列）
-        for col in all_atc_cols:
-            if col not in new_row:
-                new_row[col] = None
-
+            atc_info = drug_to_atc.get(primary_drug)
+            if atc_info:
+                keys = ['ATC??', 'ATC?3?', 'ATC?1?', '?????', '???', 'ATC??']
+                for suffix, key in zip(atc_suffixes, keys):
+                    new_row[f'{field}{suffix}'] = atc_info.get(key, '')
+            else:
+                for suffix in atc_suffixes:
+                    new_row[f'{field}{suffix}'] = None
         enriched.append(new_row)
 
     return enriched
 
-
-# ===== SQL 交叉验证（新增） =====
 
 
 def _validate_sql_structure(question: str, sql: str) -> list[str]:

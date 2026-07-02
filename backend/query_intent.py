@@ -29,34 +29,12 @@ from intent_schemas import (
     ConditionType,
     Dimension,
 )
-from domain_knowledge import kb
+from schema_ddl import get_ddl_string
 
 # ============================================================
-# DDL 懒加载
-# ============================================================
 
-_DDL_CACHE = None
+from schema_ddl import get_ddl_string
 
-def _get_ddl() -> str:
-    """获取 DDL 字符串（懒加载 + 缓存）"""
-    global _DDL_CACHE
-    if _DDL_CACHE is None:
-        try:
-            from schema_ddl import DDL_COMPACT
-            _DDL_CACHE = DDL_COMPACT
-        except ImportError:
-            from schema_knowledge import SCHEMA_KNOWLEDGE
-            lines = [f"CREATE TABLE {SCHEMA_KNOWLEDGE['table_name']} ("]
-            for col in SCHEMA_KNOWLEDGE["columns"]:
-                lines.append(f"  {col['name']} {col['type']},")
-            lines.append(");")
-            _DDL_CACHE = "\n".join(lines)
-    return _DDL_CACHE
-
-
-# ============================================================
-# 意图拆解 Prompt（DDL 驱动版）
-# ============================================================
 
 SYSTEM_PROMPT = """你是一个医药零售数据的意图分析专家。
 请将用户的查询问题解析为结构化 JSON，不要输出其他内容。
@@ -269,7 +247,7 @@ def translate(question: str) -> IntentResult:
             error="LLM 未配置，无法进行意图拆解",
         )
 
-    ddl = _get_ddl()
+    ddl = get_ddl_string()
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(ddl=ddl)},
         {"role": "user", "content": f"请解析以下查询问题的意图：\n{question}"},
