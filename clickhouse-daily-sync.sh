@@ -53,6 +53,22 @@ TOTAL_ROWS=$($PYTHON -c "import pandas as pd; print(len(pd.read_parquet('/root/A
 sed -i "s|\"total_rows\": [0-9]*|\"total_rows\": $TOTAL_ROWS|" "$STAR_QUERY_DIR/backend/schema_knowledge.py"
 echo "  ✅ 更新正式 schema_knowledge: total_rows=$TOTAL_ROWS" >> "$LOG_FILE"
 
+# Step 3.5: 重建正式环境持久化 DuckDB（正式环境用 .duckdb 文件，重启时秒开）
+echo "  📋 重建持久化 DuckDB..." >> "$LOG_FILE"
+$PYTHON -c "
+import duckdb, os
+DB_FILE = '/tmp/star-query.duckdb'
+if os.path.exists(DB_FILE):
+    os.remove(DB_FILE)
+conn = duckdb.connect(DB_FILE)
+conn.execute(\"SET memory_limit='2GB'\")
+conn.execute(\"CREATE TABLE data AS SELECT * FROM read_parquet('/root/All_data_ch_full.parquet')\")
+rows = conn.execute('SELECT count(*) FROM data').fetchone()[0]
+print(f'  重建完成: {rows:,} 行')
+conn.close()
+" >> "$LOG_FILE" 2>&1
+echo "  ✅ 持久化 DuckDB 已重建" >> "$LOG_FILE"
+
 # Step 4: 重启正式环境
 cd "$STAR_QUERY_DIR" && bash safe-restart.sh --prod >> "$LOG_FILE" 2>&1
 

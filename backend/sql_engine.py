@@ -102,17 +102,41 @@ class DuckDbEngine:
             if self._conn:
                 self._conn.close()
 
-            self._conn = duckdb.connect(":memory:")
+            # ---- 环境判断：持久化 vs 内存模式 ----
+            # 正式环境（.env 设 STARQUERY_DB_MODE=persistent）：
+            #   使用 .duckdb 文件持久化，内存上限 2GB，启动秒开
+            # 测试环境（默认）：
+            #   沿用 :memory: 模式，内存上限 1GB
+            is_persistent = os.getenv("STARQUERY_DB_MODE", "").lower() == "persistent"
 
-            # 根据文件后缀选择加载方式
-            ext = data_path.suffix.lower()
-            print(f"[DuckDB] 加载数据: {data_path} (格式: {ext})")
+            if is_persistent:
+                DB_FILE = "/tmp/star-query.duckdb"
+                self._conn = duckdb.connect(DB_FILE)
+                self._conn.execute("SET memory_limit='2GB'")
+                print(f"[DuckDB] 持久化模式: {DB_FILE} (内存上限: 2GB)")
 
-            if ext == ".parquet":
-                # Parquet 格式 — DuckDB 原生高速读取
+                # 检查表是否已存在（首次加载 / 数据更新后重建）
+                table_exists = self._conn.execute(
+                    "SELECT count(*) FROM duckdb_tables() WHERE table_name='data'"
+                ).fetchone()[0]
+
+                if not table_exists or force:
+                    self._conn.execute(
+                        f"CREATE TABLE data AS SELECT * FROM read_parquet('{data_path}')"
+                    )
+            else:
+                self._conn = duckdb.connect(":memory:")
+                self._conn.execute("SET memory_limit='1GB'")
+                print(f"[DuckDB] 内存模式 (内存上限: 1GB)")
+
                 self._conn.execute(
                     f"CREATE TABLE data AS SELECT * FROM read_parquet('{data_path}')"
                 )
+
+            # 根据文件后缀选择加载方式
+            ext = data_path.suffix.lower()
+
+            if ext == ".parquet":
                 self._row_count = self._conn.execute(
                     "SELECT COUNT(*) FROM data"
                 ).fetchone()[0]
@@ -206,6 +230,28 @@ class DuckDbEngine:
                 return pd.DataFrame()
         return pd.DataFrame()
 
+    def _execute_with_timeout(self, sql: str, timeout_sec: int = 15):
+        """
+        在超时保护下执行 DuckDB 查询。
+        超时通过 conn.interrupt() 中断 DuckDB 内部执行，无需原生 SET 支持。
+        """
+        timer = None
+        def _interrupt():
+            try:
+                self._conn.interrupt()
+            except Exception:
+                pass
+
+        try:
+            if timeout_sec > 0 and self._conn:
+                timer = threading.Timer(timeout_sec, _interrupt)
+                timer.daemon = True
+                timer.start()
+            return self._conn.execute(sql)
+        finally:
+            if timer:
+                timer.cancel()
+
     def execute(self, sql: str) -> dict:
         """
         执行查询
@@ -232,7 +278,7 @@ class DuckDbEngine:
 
         try:
             start = time.time()
-            result = self._conn.execute(sql_checked)
+            result = self._execute_with_timeout(sql_checked, timeout_sec=15)
             df = result.fetchdf()
             elapsed = (time.time() - start) * 1000
 

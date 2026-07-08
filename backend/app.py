@@ -1,5 +1,6 @@
 """星宝语料场景查询系统 — FastAPI 主入口"""
 
+import os
 import uvicorn
 from pathlib import Path
 from fastapi import FastAPI, Request, Depends
@@ -124,9 +125,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ---- 入口 ----
 if __name__ == "__main__":
+    # 生产环境禁止 reload（避免进程结构混乱导致端口抢占）
+    # 测试环境在 .env 中设置 STARQUERY_RELOAD=true 可启用
+    reload_mode = os.getenv("STARQUERY_RELOAD", "false").lower() == "true"
     uvicorn.run(
         "app:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=True,
+        reload=reload_mode,
     )

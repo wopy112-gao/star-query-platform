@@ -89,11 +89,35 @@ else
     echo -e "     ${GREEN}✓ 端口 $PORT 空闲，无需清理${NC}"
 fi
 
-# 验证端口已释放
-if fuser "$PORT/tcp" 2>/dev/null > /dev/null; then
-    echo -e "${RED}[✗] 端口 $PORT 仍被占用，请手动检查: lsof -i :$PORT${NC}"
-    exit 1
+# ---- 补杀 reloader 残留进程 ----
+# uvicorn reload=True 会产生 reloader 父进程，fuser 可能只杀 worker
+# 精准定位：只杀正在监听当前端口的 Python 进程
+LOCAL_PIDS=$(fuser "$PORT/tcp" 2>/dev/null || true)
+if [ -z "$LOCAL_PIDS" ]; then
+    # fuser 没找到，尝试通过 ss 定位
+    LOCAL_PIDS=$(ss -tlnp sport = :$PORT 2>/dev/null | grep -oP 'pid=\K\d+' | tr '\n' ' ' || true)
 fi
+if [ -n "$LOCAL_PIDS" ]; then
+    echo -e "     补杀端口 $PORT 上的残余进程 (PID: $LOCAL_PIDS)..."
+    for pid in $LOCAL_PIDS; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    sleep 2
+fi
+
+# 等待端口彻底释放（最多 10 秒）
+echo -e "     等待端口释放..."
+for i in $(seq 10); do
+    if ! fuser "$PORT/tcp" 2>/dev/null > /dev/null; then
+        echo -e "     ${GREEN}✓ 端口已释放${NC}"
+        break
+    fi
+    if [ "$i" -eq 10 ]; then
+        echo -e "${RED}[✗] 端口 $PORT 超过 10 秒仍未释放，请手动检查: lsof -i :$PORT${NC}"
+        exit 1
+    fi
+    sleep 1
+done
 
 echo ""
 
@@ -119,26 +143,52 @@ fi
 
 echo ""
 
-# ---- Step 4: 启动服务 ----
-echo -e "${YELLOW}[3/5] 启动服务...${NC}"
-echo -e "     端口: ${BOLD}$PORT${NC}"
-echo -e "     日志: ${BOLD}$LOG_FILE${NC}"
-
-nohup python3 app.py > "$LOG_FILE" 2>&1 &
-NEW_PID=$!
-echo -e "     PID: ${BOLD}$NEW_PID${NC}"
-
-# 等进程稳定
-sleep 2
-
-# 检查进程是否存活
-if ! kill -0 "$NEW_PID" 2>/dev/null; then
-    echo -e "${RED}[✗] 进程启动失败，最近日志:${NC}"
-    tail -5 "$LOG_FILE" 2>/dev/null || true
-    exit 1
+# ---- 设置 systemd 服务名 ----
+SYSTEMD_SERVICE="star-query-prod"
+if [ "${1:-}" = "--test" ]; then
+    SYSTEMD_SERVICE="star-query-test"
 fi
 
-echo -e "     ${GREEN}✓ 进程存活${NC}"
+SYSTEMD_AVAILABLE=false
+if systemctl list-unit-files "$SYSTEMD_SERVICE.service" &>/dev/null 2>&1; then
+    SYSTEMD_AVAILABLE=true
+fi
+
+# ---- Step 4: 启动服务 ----
+echo -e "${YELLOW}[3/5] 启动服务...${NC}"
+
+if $SYSTEMD_AVAILABLE; then
+    echo -e "     方式: ${BOLD}systemd${NC} (${BOLD}$SYSTEMD_SERVICE${NC})"
+    systemctl restart "$SYSTEMD_SERVICE"
+    sleep 2
+
+    if ! systemctl is-active --quiet "$SYSTEMD_SERVICE"; then
+        echo -e "${RED}[✗] systemd 启动失败，最近日志:${NC}"
+        journalctl -u "$SYSTEMD_SERVICE" --no-pager -n 15 2>/dev/null | tail -10
+        exit 1
+    fi
+
+    NEW_PID=$(systemctl show -p MainPID "$SYSTEMD_SERVICE" --value 2>/dev/null || echo "?")
+    echo -e "     PID: ${BOLD}$NEW_PID${NC}"
+    echo -e "     ${GREEN}✓ systemd 服务已启动${NC}"
+else
+    # Fallback: 无 systemd 时使用 nohup
+    echo -e "     方式: ${BOLD}nohup${NC} (systemd 服务不存在)"
+    echo -e "     端口: ${BOLD}$PORT${NC}"
+    echo -e "     日志: ${BOLD}$LOG_FILE${NC}"
+
+    nohup python3 app.py > "$LOG_FILE" 2>&1 &
+    NEW_PID=$!
+    echo -e "     PID: ${BOLD}$NEW_PID${NC}"
+    sleep 2
+
+    if ! kill -0 "$NEW_PID" 2>/dev/null; then
+        echo -e "${RED}[✗] 进程启动失败，最近日志:${NC}"
+        tail -5 "$LOG_FILE" 2>/dev/null || true
+        exit 1
+    fi
+    echo -e "     ${GREEN}✓ 进程存活${NC}"
+fi
 echo ""
 
 # ---- Step 5: 健康检查 ----
@@ -152,12 +202,15 @@ while true; do
     NOW=$(date +%s)
     ELAPSED=$((NOW - START_TIME))
     if [ "$ELAPSED" -ge "$HEALTH_TIMEOUT" ]; then
-        echo -e "     ${RED}[✗] 健康检查超时（${HEALTH_TIMEOUT}s），最近日志:${NC}"
-        tail -10 "$LOG_FILE" 2>/dev/null || true
+        echo -e "     ${RED}[✗] 健康检查超时（${HEALTH_TIMEOUT}s）${NC}"
+        if $SYSTEMD_AVAILABLE; then
+            journalctl -u "$SYSTEMD_SERVICE" --no-pager -n 10 2>/dev/null | tail -10
+        else
+            tail -10 "$LOG_FILE" 2>/dev/null || true
+        fi
         exit 1
     fi
 
-    # 用 curl 检查（静默模式）
     RESP=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo "000")
 
     if [ "$RESP" = "200" ]; then
