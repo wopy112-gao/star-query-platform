@@ -60,6 +60,9 @@ class DataExportParams(BaseModel):
     cities: list[str] = Field(default_factory=list, description="城市列表")
     confidence_min: Optional[float] = Field(None, ge=0.0, le=1.0, description="最低综合置信度评分")
     is_commercial: Optional[int] = Field(None, description="是否商用: None=不限, 0=非商用, 1=商用")
+    egg_scope: Optional[str] = Field(None, description="彩蛋范围: None=不限, all=仅彩蛋场景, exclude=排除彩蛋")
+    egg_is_numerator: Optional[int] = Field(None, description="是否分子: None=不限, 1=仅发分, 0=仅未发分")
+    egg_drug_name: list[str] = Field(default_factory=list, description="彩蛋药品名称列表，空=不限")
     format: Literal["csv", "parquet", "csv_gz"] = Field("parquet", description="导出格式: csv(通用)/parquet(推荐,压缩)/csv_gz(压缩CSV)")
 
 
@@ -139,6 +142,23 @@ def _build_where_clause(params: DataExportParams) -> str:
     # 8. 是否商用
     if params.is_commercial is not None:
         where_parts.append(f"是否商用 = {params.is_commercial}")
+
+    # 9. 彩蛋范围
+    if params.egg_scope == 'all':
+        where_parts.append('"彩蛋任务ID" > 0')
+    elif params.egg_scope == 'exclude':
+        where_parts.append('("彩蛋任务ID" = 0 OR "彩蛋任务ID" IS NULL)')
+
+    # 10. 分子命中（仅在彩蛋范围内有意义，但允许单独使用）
+    if params.egg_is_numerator == 1:
+        where_parts.append('"是否分子1=是(发分)" = 1')
+    elif params.egg_is_numerator == 0:
+        where_parts.append('"是否分子1=是(发分)" = 0')
+
+    # 11. 彩蛋药品
+    if params.egg_drug_name:
+        escaped = [f"'{d.replace(chr(39), chr(39)+chr(39))}'" for d in params.egg_drug_name]
+        where_parts.append(f'"彩蛋药品名称" IN ({", ".join(escaped)})')
 
     if not where_parts:
         return ""
@@ -257,11 +277,14 @@ def get_filter_options(username: str = Depends(require_export_permission)):
         import duckdb
         conn: duckdb.DuckDBPyConnection = engine.conn
 
-        def _distinct(field: str, limit: int = 5000) -> list:
+        def _distinct(field: str, limit: int = 5000, where_extra: str = "") -> list:
             try:
+                where = f'WHERE "{field}" IS NOT NULL AND "{field}" != \'\' '
+                if where_extra:
+                    where += f"AND {where_extra} "
                 r = conn.execute(
                     f'SELECT DISTINCT "{field}" FROM data '
-                    f'WHERE "{field}" IS NOT NULL AND "{field}" != \'\' '
+                    f'{where}'
                     f'ORDER BY "{field}" LIMIT {limit}'
                 ).fetchall()
                 return [row[0] for row in r]
@@ -351,6 +374,11 @@ def get_filter_options(username: str = Depends(require_export_permission)):
                     {"value": 1, "label": "仅商用数据"},
                     {"value": 0, "label": "非商用数据"},
                 ],
+                "egg": {
+                    "drug_names": _distinct("彩蛋药品名称", where_extra="彩蛋任务ID > 0 AND 彩蛋药品名称 IS NOT NULL AND 彩蛋药品名称 != ''"),
+                    "total_egg_scenes": _single("SELECT COUNT(*) FROM data WHERE 彩蛋任务ID > 0") or 0,
+                    "total_numerator": _single('SELECT COUNT(*) FROM data WHERE "是否分子1=是(发分)" = 1') or 0,
+                },
                 "total_rows": total_rows,
                 "total_columns": len(columns),
                 "columns": columns,

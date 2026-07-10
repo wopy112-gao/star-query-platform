@@ -94,6 +94,9 @@ export default function DataExportPanel() {
   const [cities, setCities] = useState<string[]>([]);
   const [confidence, setConfidence] = useState(0);
   const [isCommercial, setIsCommercial] = useState<string>('all');
+  const [eggScope, setEggScope] = useState<string>('all');
+  const [eggIsNumerator, setEggIsNumerator] = useState<string>('all');
+  const [eggDrugName, setEggDrugName] = useState<string[]>([]);
   const [format, setFormat] = useState('parquet');
 
   // 预览 & 下载
@@ -153,6 +156,12 @@ export default function DataExportPanel() {
       if (cities.length) params.cities = cities;
       if (confidence > 0) params.confidence_min = confidence;
       if (isCommercial !== 'all') params.is_commercial = isCommercial === '1' ? 1 : 0;
+      if (eggScope !== 'all') {
+        if (eggScope === 'egg_only') params.egg_scope = 'all';
+        else if (eggScope === 'exclude') params.egg_scope = 'exclude';
+      }
+      if (eggIsNumerator !== 'all') params.egg_is_numerator = eggIsNumerator === '1' ? 1 : 0;
+      if (eggDrugName.length > 0) params.egg_drug_name = eggDrugName;
 
       const res = await fetch('/api/data/export/preview', {
         method: 'POST',
@@ -164,7 +173,7 @@ export default function DataExportPanel() {
     } catch {} finally {
       setPreviewLoading(false);
     }
-  }, [dateFrom, dateTo, diseaseCategories, diseaseSubcategories, products, provinces, chains, cities, confidence, isCommercial, format]);
+  }, [dateFrom, dateTo, diseaseCategories, diseaseSubcategories, products, provinces, chains, cities, confidence, isCommercial, eggScope, eggIsNumerator, eggDrugName, format]);
 
   // 自动预览（防抖500ms）
   useEffect(() => {
@@ -189,6 +198,12 @@ export default function DataExportPanel() {
       if (cities.length) params.cities = cities;
       if (confidence > 0) params.confidence_min = confidence;
       if (isCommercial !== 'all') params.is_commercial = isCommercial === '1' ? 1 : 0;
+      if (eggScope !== 'all') {
+        if (eggScope === 'egg_only') params.egg_scope = 'all';
+        else if (eggScope === 'exclude') params.egg_scope = 'exclude';
+      }
+      if (eggIsNumerator !== 'all') params.egg_is_numerator = eggIsNumerator === '1' ? 1 : 0;
+      if (eggDrugName.length > 0) params.egg_drug_name = eggDrugName;
 
       const res = await fetch('/api/data/export', {
         method: 'POST',
@@ -402,6 +417,56 @@ export default function DataExportPanel() {
               <option value="1">仅商用数据</option>
               <option value="0">非商用数据</option>
             </select>
+          </div>
+
+          {/* 彩蛋任务 */}
+          <div className="export-field" style={{ gridColumn: '1 / -1', marginTop: 8 }}>
+            <div className="export-field-label">🥚 彩蛋任务</div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              {['all', 'egg_only', 'exclude'].map(v => (
+                <label key={v} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="eggScope"
+                    checked={eggScope === v}
+                    onChange={() => setEggScope(v)}
+                  />
+                  <span>{v === 'all' ? '不限' : v === 'egg_only' ? '仅彩蛋场景' : '排除彩蛋'}</span>
+                </label>
+              ))}
+            </div>
+            {eggScope === 'egg_only' && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: '#666' }}>分子命中:</span>
+                  <select
+                    className="export-select"
+                    style={{ width: 120, padding: '4px 8px', fontSize: 12 }}
+                    value={eggIsNumerator}
+                    onChange={e => setEggIsNumerator(e.target.value)}
+                  >
+                    <option value="all">不限</option>
+                    <option value="1">仅发分</option>
+                    <option value="0">仅未发分</option>
+                  </select>
+                </div>
+                {filterOptions?.egg?.drug_names?.length > 0 && (
+                  <MultiSelect
+                    label="彩蛋药品"
+                    options={filterOptions.egg.drug_names}
+                    selected={eggDrugName}
+                    onChange={setEggDrugName}
+                    placeholder="选择彩蛋药品..."
+                  />
+                )}
+              </div>
+            )}
+            {filterOptions?.egg?.total_egg_scenes > 0 && (
+              <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+                彩蛋场景共 {Number(filterOptions.egg.total_egg_scenes).toLocaleString()} 条
+                · 分子（发分）{Number(filterOptions.egg.total_numerator).toLocaleString()} 条
+              </div>
+            )}
           </div>
         </div>
       </div>

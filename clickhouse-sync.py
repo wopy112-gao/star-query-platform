@@ -135,6 +135,7 @@ ai_scenario_chek AS (
         scenario_check.confidence_score                                          AS `切割置信度分值`,
         scenario_check.completeness_score                                        AS `切割完整度分值`,
         -- ↑↑↑ 新增字段结束 ↑↑↑
+        scenario_check.original_scenario_id                                        AS `原始场景ID`,
         arrayDistinct(JSONExtract(scenario_check.exd_disease, 'Array(String)'))     AS exd_disease,
         arrayDistinct(JSONExtract(scenario_check.exd_disease_gate, 'Array(String)')) AS exd_disease_gate
     FROM yaoxin_ai.x_ai_assistant_scenario_check scenario_check
@@ -192,7 +193,8 @@ select_all_disease AS (
         `业务置信度`,
         `是否商用`,
         `切割置信度分值`,
-        `切割完整度分值`
+        `切割完整度分值`,
+        `原始场景ID`
         -- ↑↑↑ 新增字段结束 ↑↑↑
     FROM ai_scenario_chek ck
     ARRAY JOIN exd_disease AS exd_disease_name
