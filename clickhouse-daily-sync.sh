@@ -29,15 +29,28 @@ full = pd.read_parquet('$FULL_FILE')
 incr = pd.read_parquet('$INCR_FILE')
 print(f'  全量: {len(full):,} 行 | 增量{len(incr):,} 行')
 
-# 合并 + 按场景ID去重（保留后出现的，即增量优先）
+# 解析增量日期（从增量 parquet 的 ydate 中获取）
+incr_ydates = incr['ydate'].unique()
+print(f'  增量日期范围: {sorted(incr_ydates)}')
+
+# Step A: 从全量中移除增量范围内的旧数据（这些会被增量覆盖）
+before_remove = len(full)
+full = full[~full['ydate'].isin(incr_ydates)]
+removed = before_remove - len(full)
+print(f'  全量移除增量日期数据: {removed:,} 行')
+
+# Step B: 合并（此时不会有真正重复的行，因为增量日期已被移除）
+# 注意：不能按 场景ID 去重，因为 ARRAY JOIN 展开后同一场景ID会有多行（每种疾病一行）
 merged = pd.concat([full, incr], ignore_index=True)
-before = len(merged)
-merged = merged.drop_duplicates(subset=['场景ID'], keep='last')
-after = len(merged)
-print(f'  合并后: {before:,} → 去重后: {after:,} 行 (删除 {before-after:,} 个重复场景)')
+print(f'  合并后: {len(merged):,} 行')
+
+# 验证多疾病展开是否保留
+scene_counts = merged.groupby('场景ID').size()
+multi = scene_counts[scene_counts > 1]
+print(f'  多疾病场景数: {len(multi):,} (涉及 {multi.sum():,} 行)')
 
 # 日期范围
-print(f'  日期: {merged.ydate.min()} ~ {merged.ydate.max()} ({merged.ydate.nunique()} 天)')
+print(f'  日期: {merged[\"ydate\"].min()} ~ {merged[\"ydate\"].max()} ({merged[\"ydate\"].nunique()} 天)')
 
 merged.to_parquet('$MERGED_FILE', index=False)
 import os
