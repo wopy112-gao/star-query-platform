@@ -107,6 +107,7 @@ detail: 明细
 店员提及药品JSON | 店员推荐药品JSON
 业务置信度 | 场景完整度 | 切割置信度分值 | 切割完整度分值 | 活动时间占比
 （"不同产品/各产品" → dimension=场景提及药品，不要在 conditions 里加）
+（"成交产品/售卖产品/已售产品" → dimension=订单药品，因为"成交产品"指实际卖出的产品）
 （"不同年龄段/各年龄段" → dimension=用药人年龄分层）
 （"不同置信度/各置信度" → dimension=业务置信度）
 
@@ -400,6 +401,14 @@ def translate(question: str) -> IntentResult:
     deal_keywords = ["成交", "达成", "售卖"]
     if any(kw in question for kw in deal_keywords):
         intent.is_deal_filtered = True
+
+    # 后处理4b：成交产品维度修正
+    # 用户说"成交产品/售卖产品/已售产品"时，维度应指向实际卖出的产品（订单药品）
+    # 而非场景中提到的所有产品（场景提及药品）
+    if any(kw in question for kw in ["成交产品", "售卖产品", "已售产品", "成交药品"]):
+        if intent.dimension == "场景提及药品" or intent.dimension is None:
+            intent.dimension = "订单药品"
+            print(f"[IntentFix] 检测到「成交产品」→ dimension 修正为「订单药品」")
 
     # 后处理5：解析并标准化时间范围条件
     intent = _fix_time_range(intent)

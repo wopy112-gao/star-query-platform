@@ -211,7 +211,7 @@ while true; do
         exit 1
     fi
 
-    RESP=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo "000")
+    RESP=$(curl -s --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo "000")
 
     if [ "$RESP" = "200" ]; then
         HEALTHY=true
@@ -222,7 +222,7 @@ while true; do
 done
 
 # 获取健康详情
-HEALTH_INFO=$(curl -s "$HEALTH_URL" 2>/dev/null || echo '{"status":"unknown"}')
+HEALTH_INFO=$(curl -s --connect-timeout 5 --max-time 10 "$HEALTH_URL" 2>/dev/null || echo '{"status":"unknown"}')
 
 echo -e "     ✓ HTTP 200 OK"
 echo -e "     详情: $HEALTH_INFO"

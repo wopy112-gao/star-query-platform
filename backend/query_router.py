@@ -172,6 +172,15 @@ def enrich_query_results(rows):
 
         enriched.append(new_row)
 
+    # 清理前端不需要展示的 ATC 映射字段
+    # （保留 enrich 内部计算，但返回前去掉，避免前端表格出现大量空列）
+    atc_remove_suffixes = ['_ATC分类', '_ATC编码', '_中西药', '_置信度', '_ATC大类', '_ATC映射']
+    for row in enriched:
+        for suf in atc_remove_suffixes:
+            for key in list(row.keys()):
+                if key.endswith(suf):
+                    del row[key]
+
     return enriched
 
 
