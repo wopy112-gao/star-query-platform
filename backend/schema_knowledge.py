@@ -6,7 +6,7 @@
 SCHEMA_KNOWLEDGE = {
     "table_name": "data",
     "source": "/root/All_data_ch_full.parquet",
-    "total_rows": 2953252,
+    "total_rows": 2987458,
     "columns": [
         {"name": "疾病名称", "type": "VARCHAR", "description": "进店顾客主诉疾病或购药对应疾病（呼吸系统分类）",
          "sample": "呼吸系统疾病-感冒", "keywords": ["感冒", "咳嗽", "鼻炎", "发烧", "头痛"]},
