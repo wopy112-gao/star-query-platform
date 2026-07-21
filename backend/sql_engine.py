@@ -199,6 +199,8 @@ class DuckDbEngine:
     _mapping_loaded: bool = False
     _mapping_row_count: int = 0
     _lock = threading.Lock()
+    _health_checker_started: bool = False
+    _health_checker_thread: Optional[threading.Thread] = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -317,6 +319,9 @@ class DuckDbEngine:
 
             # 创建预聚合热数据表（后台执行，不阻塞加载流程）
             self._build_aggregate_tables()
+
+            # 启动后台连接巡检线程（P1-1 自愈机制）
+            self._start_health_checker()
 
             info = self._get_info()
             print(f"[DuckDB] 加载完成: {info['total_rows']} 行 × {info['total_cols']} 列")
@@ -471,6 +476,58 @@ class DuckDbEngine:
             self._query_executor.shutdown(wait=False)
             self._query_executor = None
             print("[查询线程池] 已关闭")
+
+    def _start_health_checker(self):
+        """启动后台连接巡检线程（P1-1 自愈机制）
+
+        daemon 线程，随进程退出自动结束。
+        每 30 秒遍历所有连接执行 SELECT 1 健康检测，
+        异常连接自动重建，
+        全部不可用时触发告警（Step 2 扩展为自动重启）。
+        """
+        if self._health_checker_started:
+            return
+
+        def checker():
+            while True:
+                time.sleep(30)
+                if not self._loaded or not self._pool or not self._pool._initialized:
+                    continue
+                all_dead = True
+                for i in range(self._pool.size):
+                    conn = self._pool._connections[i]
+                    if conn is None:
+                        print(f"[健康巡检] 连接 #{i} 为空，重建中...")
+                        self._pool._rebuild(i)
+                        continue
+                    try:
+                        conn.execute("SELECT 1").fetchone()
+                        all_dead = False
+                    except Exception as e:
+                        print(f"[健康巡检] 连接 #{i} 异常 ({e})，重建中...")
+                        self._pool._rebuild(i)
+                if all_dead:
+                    print("[健康巡检] ⚠️ 所有连接不可用，5秒后触发自动重启...")
+                    time.sleep(5)
+                    # 再次确认是否真的全部不可用
+                    still_dead = True
+                    for i in range(self._pool.size):
+                        try:
+                            self._pool._connections[i].execute("SELECT 1").fetchone()
+                            still_dead = False
+                            break
+                        except Exception:
+                            pass
+                    if still_dead:
+                        print("[健康巡检] ⚠️ 确认所有连接不可用，正在退出进程（systemd 将自动拉起）...")
+                        os._exit(1)
+
+        self._health_checker_thread = threading.Thread(
+            target=checker, daemon=True, name="duckdb-health-checker"
+        )
+        self._health_checker_thread.start()
+        self._health_checker_started = True
+        print(f"[健康巡检] 后台线程已启动（30s间隔）")
 
     def get_drug_mapping_df(self) -> pd.DataFrame:
         """返回 drug_mapping 的 pandas DataFrame"""
