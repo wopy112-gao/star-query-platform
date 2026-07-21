@@ -320,6 +320,9 @@ class DuckDbEngine:
             # 创建预聚合热数据表（后台执行，不阻塞加载流程）
             self._build_aggregate_tables()
 
+            # 创建药品倒排索引表（P1-2 药品加速）
+            self._build_drug_index()
+
             # 启动后台连接巡检线程（P1-1 自愈机制）
             self._start_health_checker()
 
@@ -469,6 +472,83 @@ class DuckDbEngine:
             print(f"[预聚合] 完成: pre_agg={pre_rows}行, disease_agg={disease_rows}行, monthly_agg={monthly_rows}行 ({elapsed:.0f}ms)")
         except Exception as e:
             print(f"[预聚合] 失败 (不影响主流程): {e}")
+
+    def _build_drug_index(self):
+        """创建药品倒排索引表（P1-2 药品加速）
+
+        将三个药品 JSON 数组字段展开为 {场景ID, 药品名, 来源字段} 格式，
+        药品 LIKE 查询改走倒排索引，从全表扫 6s → 毫秒级。
+
+        幂等：每次先删再建，启动时更新。
+        一次性建表成本 ~4-5s（611万行），仅在启动时执行一次。
+        """
+        if not self._loaded or not self._pool:
+            return
+
+        try:
+            conn = self._pool.get()
+            if conn is None:
+                print("[药品索引] 跳过：无可用连接")
+                return
+
+            # 检查 data 表是否有数据
+            row_count = conn.execute("SELECT COUNT(*) FROM data").fetchone()[0]
+            if row_count == 0:
+                print("[药品索引] 跳过：data 表为空")
+                return
+
+            start = time.time()
+
+            conn.execute("DROP TABLE IF EXISTS drug_index")
+            conn.execute("""
+                CREATE TABLE drug_index AS
+                SELECT DISTINCT
+                    场景ID,
+                    TRIM(t.drug, ' "') AS 药品名,
+                    '场景提及药品' AS 来源字段
+                FROM data,
+                LATERAL UNNEST(string_split(TRIM(场景提及药品, '[]'), ',')) AS t(drug)
+                WHERE 场景提及药品 IS NOT NULL AND 场景提及药品 != '[]' AND 场景提及药品 != ''
+
+                UNION ALL
+
+                SELECT DISTINCT
+                    场景ID,
+                    TRIM(t.drug, ' "') AS 药品名,
+                    '顾客点名药品' AS 来源字段
+                FROM data,
+                LATERAL UNNEST(string_split(TRIM(顾客点名药品, '[]'), ',')) AS t(drug)
+                WHERE 顾客点名药品 IS NOT NULL AND 顾客点名药品 != '[]' AND 顾客点名药品 != ''
+
+                UNION ALL
+
+                SELECT DISTINCT
+                    场景ID,
+                    TRIM(t.drug, ' "') AS 药品名,
+                    '订单药品' AS 来源字段
+                FROM data,
+                LATERAL UNNEST(string_split(TRIM(订单药品, '[]'), ',')) AS t(drug)
+                WHERE 订单药品 IS NOT NULL AND 订单药品 != '[]' AND 订单药品 != ''
+                AND t.drug NOT LIKE '%未识别%'
+            """)
+
+            index_rows = conn.execute("SELECT COUNT(*) FROM drug_index").fetchone()[0]
+            elapsed = (time.time() - start) * 1000
+            print(f"[药品索引] 完成: {index_rows} 行 ({elapsed:.0f}ms)")
+
+            # 建索引：按药品名分组加速 LIKE 查询
+            conn.execute("DROP TABLE IF EXISTS drug_name_index")
+            conn.execute("""
+                CREATE TABLE drug_name_index AS
+                SELECT 药品名, LIST(场景ID) AS 场景ID列表
+                FROM drug_index
+                GROUP BY 药品名
+            """)
+            name_rows = conn.execute("SELECT COUNT(*) FROM drug_name_index").fetchone()[0]
+            elapsed_total = (time.time() - start) * 1000
+            print(f"[药品索引] drug_name_index 完成: {name_rows} 个唯一药品名 ({elapsed_total:.0f}ms)")
+        except Exception as e:
+            print(f"[药品索引] 失败 (不影响主流程): {e}")
 
     def shutdown_executor(self):
         """关闭查询线程池"""
