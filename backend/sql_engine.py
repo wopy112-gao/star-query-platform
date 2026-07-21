@@ -636,6 +636,98 @@ class DuckDbEngine:
         except FutureTimeoutError:
             raise TimeoutError(f"查询执行超时 ({timeout_sec}s)")
 
+    def _rewrite_drug_like_query(self, sql: str) -> str:
+        """药品 LIKE 查询自动路由到 drug_name_index 索引
+
+        检测 SQL 中的 场景提及药品/顾客点名药品/订单药品 LIKE 条件，
+        改写为走 drug_name_index 子查询（259443行小表 LIKE，毫秒级）。
+
+        改写示例：
+          SELECT * FROM data WHERE 场景提及药品 LIKE '%倍他乐克%'
+          → SELECT * FROM data WHERE 场景ID IN (SELECT 场景ID FROM drug_name_index WHERE 药品名 LIKE '%倍他乐克%')
+
+          三个字段 OR 也会统一改写为单子查询（drug_name_index 已包含三个来源）
+        """
+        drug_fields = ['场景提及药品', '顾客点名药品', '订单药品']
+        field_or = '|'.join(re.escape(f) for f in drug_fields)
+
+        # 检测药品 LIKE 条件并提取值
+        like_pattern = rf'(?:{field_or})\s+LIKE\s+\'([^\']+)\''
+        all_vals = re.findall(like_pattern, sql, re.IGNORECASE)
+        if not all_vals:
+            return sql
+
+        # 只处理单一 LIKE 值的情况（多值不同暂不优化）
+        unique_vals = list(set(all_vals))
+        if len(unique_vals) != 1:
+            return sql
+
+        like_val = unique_vals[0]
+        subquery = f"场景ID IN (SELECT 场景ID FROM drug_index WHERE 药品名 LIKE '{like_val}')"
+
+        # 找到 WHERE 子句范围（截断到 GROUP/ORDER/LIMIT 之前）
+        where_m = re.search(r'\bWHERE\b', sql, re.IGNORECASE)
+        if not where_m:
+            return sql
+
+        before_where = sql[:where_m.start()]
+        after_where = sql[where_m.end():]
+
+        # 截断：保留 WHERE 后到 GROUP/ORDER/LIMIT/OFFSET 之前的部分
+        after_where = re.split(
+            r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|OFFSET)\b',
+            after_where, maxsplit=1, flags=re.IGNORECASE
+        )
+        tail = ''
+        if len(after_where) > 1:
+            tail = ''.join(after_where[1:])  # 保留截断的后半段（GROUP BY/ORDER BY/LIMIT...）
+        after_where = after_where[0]
+
+        # 移除所有药品 LIKE 条件（包括 OR 前缀）
+        cleaned = re.sub(
+            rf'(?:\s+OR\s+)?(?:{field_or})\s+LIKE\s+\'{re.escape(like_val)}\'',
+            '',
+            after_where,
+            flags=re.IGNORECASE
+        )
+
+        # 清理多余的括号/空格/AND/OR
+        cleaned = cleaned.strip()
+        # 去掉空括号
+        cleaned = re.sub(r'\(\s*\)', '', cleaned)
+        # 清理括号内开头的 AND/OR（如 (AND 条件) → (条件)）
+        cleaned = re.sub(r'\(\s*(AND|OR)\s+', r'(', cleaned)
+        # 清理括号内结尾的 AND/OR
+        cleaned = re.sub(r'\s+(AND|OR)\s*\)', r')', cleaned)
+        # 归一化空格
+        cleaned = re.sub(r'\(\s+', '(', cleaned)
+        cleaned = re.sub(r'\s+\)', ')', cleaned)
+        cleaned = re.sub(r'\s+OR\s+', ' OR ', cleaned)
+        cleaned = re.sub(r'\s+AND\s+', ' AND ', cleaned)
+        # 去掉开头/结尾的 AND/OR
+        cleaned = re.sub(r'^\s*(?:AND|OR)\s+', '', cleaned)
+        cleaned = re.sub(r'\s+(?:AND|OR)\s*$', '', cleaned)
+        cleaned = cleaned.strip()
+
+        # 构建新 WHERE
+        if cleaned and cleaned not in ('()', ''):
+            new_where = f"WHERE ({subquery}) AND ({cleaned})"
+        else:
+            new_where = f"WHERE {subquery}"
+
+        result = f"{before_where} {new_where} {tail}"
+        # 清理多余空格
+        # 清理多余空格
+        result = re.sub(r'\s+', ' ', result).strip()
+        if sql.strip().endswith(';'):
+            result = result.rstrip() + ';'
+
+        # 打印改写日志（首次命中时）
+        if sql != result:
+            print(f"[药品索引] 查询改写: {sql[:100]}... → {result[:100]}...")
+
+        return result
+
     def execute(self, sql: str) -> dict:
         """
         执行查询（从连接池取连接，执行，超时保护）
@@ -672,6 +764,8 @@ class DuckDbEngine:
                     "elapsed_ms": 0,
                 }
             start = time.time()
+            # P1-2: 药品 LIKE 查询自动路由到 drug_name_index 索引
+            sql_checked = self._rewrite_drug_like_query(sql_checked)
             result = self._execute_with_timeout(conn, sql_checked, timeout_sec=15)
             df = result.fetchdf()
             elapsed = (time.time() - start) * 1000
