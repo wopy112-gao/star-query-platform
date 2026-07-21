@@ -1,4 +1,4 @@
-﻿"""星宝语料场景查询系统 — JWT 认证模块"""
+"""星宝语料场景查询系统 — JWT 认证模块"""
 
 import hashlib
 from datetime import datetime, timedelta, timezone
@@ -10,38 +10,26 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from config import settings
 
-# --- 密码加密（PBKDF2-HMAC-SHA256，加盐） ---
+# --- 密码加密（SHA-256，绕开 bcrypt 兼容性问题） ---
 
-HASH_ITERATIONS = 100_000
+PWD_PREFIX = "sha256$"
 
 
-def hash_password(plain: str, salt: str = None) -> str:
-    """PBKDF2-HMAC-SHA256 密码哈希（加盐）"""
-    import os
-    if salt is None:
-        salt = os.urandom(16).hex()
-    derived = hashlib.pbkdf2_hmac(
-        "sha256",
-        plain.encode("utf-8"),
-        salt.encode("utf-8"),
-        HASH_ITERATIONS,
-    )
-    return f"pbkdf2${salt}${derived.hex()}"
+def hash_password(plain: str) -> str:
+    """SHA-256 密码哈希"""
+    return PWD_PREFIX + hashlib.sha256(plain.encode()).hexdigest()
 
 
 def verify_password(plain: str, stored: str) -> bool:
-    """验证密码（仅支持 pbkdf2$ 格式，不再兼容明文）"""
-    if not stored.startswith("pbkdf2$"):
-        # 旧数据迁移：如果存储的是 sha256$，升级到 pbkdf2$
-        if stored.startswith("sha256$"):
-            return False  # 拒绝旧格式登录，要求重置密码
-        return False
-    parts = stored.split("$")
-    if len(parts) != 4:
-        return False
-    _, _, salt, digest = parts
-    expected = hash_password(plain, salt)
-    return expected == stored
+    """验证密码（兼容 plaintext + sha256$ 两种格式）"""
+    if stored.startswith(PWD_PREFIX):
+        return stored == hash_password(plain)
+    # 明文比较（.env 中的原始密码）
+    return plain == stored
+
+
+# --- JWT ---
+security = HTTPBearer(auto_error=False)
 
 
 # --- JWT ---

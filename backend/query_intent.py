@@ -29,12 +29,34 @@ from intent_schemas import (
     ConditionType,
     Dimension,
 )
-from schema_ddl import get_ddl_string
+from domain_knowledge import kb
 
 # ============================================================
+# DDL 懒加载
+# ============================================================
 
-from schema_ddl import get_ddl_string
+_DDL_CACHE = None
 
+def _get_ddl() -> str:
+    """获取 DDL 字符串（懒加载 + 缓存）"""
+    global _DDL_CACHE
+    if _DDL_CACHE is None:
+        try:
+            from schema_ddl import DDL_COMPACT
+            _DDL_CACHE = DDL_COMPACT
+        except ImportError:
+            from schema_knowledge import SCHEMA_KNOWLEDGE
+            lines = [f"CREATE TABLE {SCHEMA_KNOWLEDGE['table_name']} ("]
+            for col in SCHEMA_KNOWLEDGE["columns"]:
+                lines.append(f"  {col['name']} {col['type']},")
+            lines.append(");")
+            _DDL_CACHE = "\n".join(lines)
+    return _DDL_CACHE
+
+
+# ============================================================
+# 意图拆解 Prompt（DDL 驱动版）
+# ============================================================
 
 SYSTEM_PROMPT = """你是一个医药零售数据的意图分析专家。
 请将用户的查询问题解析为结构化 JSON，不要输出其他内容。
@@ -46,7 +68,10 @@ SYSTEM_PROMPT = """你是一个医药零售数据的意图分析专家。
 根据 DDL 中的字段和用户问题，选择最合适的条件类型和字段值：
 
 - **疾病/症状** → type="disease", 在 疾病名称 字段上用 LIKE 模糊匹配
-- **药品名**（点名/提及/成交任一） → type="drug_any", 在 顾客点名药品/场景提及药品/订单药品 上用 CONTAINS
+- **药品名（顾客点名）** → 当用户明确说"点名购买""指名""点名要"时，type="drug_named"，只在 顾客点名药品 字段上匹配
+- **药品名（场景提及）** → 当用户明确说"提及""场景提到"时，type="drug_mentioned"，只在 场景提及药品 字段上匹配
+- **药品名（成交/订单）** → 当用户明确说"成交""购买""下单""订单"时，type="drug_ordered"，只在 订单药品 字段上匹配
+- **药品名（一般查询）** → 无上述特定限定词时，type="drug_any"，在 顾客点名药品/场景提及药品/订单药品 三个字段上同时匹配
 - **地域**（省份/城市） → type="geo", 在 省份 或 城市 字段上精确匹配
 - **时间范围**（最近N天、近N天、本月、本周、昨天、2026年等） → type="time_range", value 写原始描述（如"最近7天""本月""2026年"）
 - **成交/未成交** → type="deal_yes"/"deal_no", 用 交易是否达成 字段
@@ -247,7 +272,7 @@ def translate(question: str) -> IntentResult:
             error="LLM 未配置，无法进行意图拆解",
         )
 
-    ddl = get_ddl_string()
+    ddl = _get_ddl()
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(ddl=ddl)},
         {"role": "user", "content": f"请解析以下查询问题的意图：\n{question}"},

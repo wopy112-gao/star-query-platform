@@ -116,6 +116,15 @@ class DuckDbEngine:
                 self._row_count = self._conn.execute(
                     "SELECT COUNT(*) FROM data"
                 ).fetchone()[0]
+            elif ext in (".csv", ".tsv"):
+                # CSV/TSV 格式 — DuckDB 原生读取
+                sep = chr(9) if ext == ".tsv" else ","
+                self._conn.execute(
+                    f"CREATE TABLE data AS SELECT * FROM read_csv_auto('{data_path}', delim='{sep}')"
+                )
+                self._row_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM data"
+                ).fetchone()[0]
             else:
                 # xlsx 格式 — 用 pandas 读取
                 df = pd.read_excel(str(data_path))
@@ -143,6 +152,12 @@ class DuckDbEngine:
             # 处理 NaN
             if isinstance(sample, float) and pd.isna(sample):
                 sample = None
+            # 转换 numpy 类型到 Python 原生类型
+            if hasattr(sample, 'item'):
+                try:
+                    sample = sample.item()
+                except (ValueError, AttributeError):
+                    pass
             cols.append({
                 "name": col,
                 "dtype": str(df[col].dtype),

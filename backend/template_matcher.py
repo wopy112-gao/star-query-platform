@@ -456,6 +456,11 @@ class TemplateMatcher:
             for k, v in defaults.items():
                 params.setdefault(k, v)
 
+            # 补全占位符默认值（当模板有 {conditions} 但正则未捕获时）
+            params.setdefault("conditions", "")
+            params.setdefault("conditions_extra", "")
+            params.setdefault("limit", "10")
+
             sql = tmpl["sql_template"].format(**params)
             return {
                 "template_id": tmpl["id"],
