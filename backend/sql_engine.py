@@ -9,6 +9,7 @@ from typing import Optional, List
 
 import duckdb
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from config import settings
 
@@ -84,8 +85,10 @@ def _check_healthy(conn: Optional[duckdb.DuckDBPyConnection], timeout_sec: int =
 class ConnectionPool:
     """DuckDB 连接池（固定大小），轮询分配 + 健康检测 + 自动重建"""
 
-    def __init__(self, size: int = 2):
+    def __init__(self, size: int = 6):
         self._connections: List[Optional[duckdb.DuckDBPyConnection]] = [None] * size
+        self._last_ok: List[float] = [0.0] * size  # 最后活跃时间戳，0=需重建
+        self._heartbeat_sec: float = 60.0  # 超过此秒数无活动→自动重建
         self._lock = threading.Lock()
         self._next = 0
         self._db_file = ":memory:"
@@ -108,6 +111,7 @@ class ConnectionPool:
             conn.execute(f"SET memory_limit='{memory_limit}'")
             conn.execute("SET threads = 1")
             self._connections[i] = conn
+            self._last_ok[i] = time.time()  # 初始标记为健康
 
             # 如果是持久化模式，已存在的 data 表所有连接共享
             # 注册 drug_mapping 视图到每个连接
@@ -118,38 +122,53 @@ class ConnectionPool:
         print(f"[连接池] 初始化完成: {len(self._connections)} 连接"
               f" ({'持久化' if db_file != ':memory:' else '内存'}模式)")
 
-    def get(self) -> duckdb.DuckDBPyConnection:
-        """轮询取一个健康连接，不健康则自动重建"""
+    def get(self) -> Optional[duckdb.DuckDBPyConnection]:
+        """非阻塞取连接，不健康自动重建；锁冲突时返回 None"""
         if not self._initialized:
             raise RuntimeError("ConnectionPool 未初始化")
 
-        with self._lock:
+        now = time.time()
+        if not self._lock.acquire(blocking=False):
+            # 拿不到锁 → 服务繁忙
+            return None
+
+        try:
             for _ in range(len(self._connections)):
                 idx = self._next
                 self._next = (self._next + 1) % len(self._connections)
                 conn = self._connections[idx]
-                if _check_healthy(conn):
+                if conn is None:
+                    print(f"[连接池] 连接 #{idx} 为空，正在重建...")
+                    self._rebuild(idx)
+                    self._last_ok[idx] = now
+                    return self._connections[idx]
+                if now - self._last_ok[idx] < self._heartbeat_sec:
                     return conn
-                # 连接不健康，重建
-                print(f"[连接池] 连接 #{idx} 不健康，正在重建...")
+                # 连接超时未活动 → 重建
+                print(f"[连接池] 连接 #{idx} 超时未活动 ({(now - self._last_ok[idx]):.0f}s)，正在重建...")
                 self._rebuild(idx)
+                self._last_ok[idx] = now
                 return self._connections[idx]
+        finally:
+            self._lock.release()
 
-        # 理论上不会走到这里
         raise RuntimeError("连接池异常")
 
+    def mark_unhealthy(self, conn: duckdb.DuckDBPyConnection):
+        """标记连接为不健康（时间戳置零），下次 get() 时会自动重建"""
+        for i, c in enumerate(self._connections):
+            if c is conn:
+                self._last_ok[i] = 0.0
+                print(f"[连接池] 连接 #{i} 标记为不健康")
+                break
+
     def _rebuild(self, idx: int):
-        """重建指定位置的连接"""
-        old = self._connections[idx]
-        if old:
-            try:
-                old.close()
-            except Exception:
-                pass
+        """重建指定位置的连接（不关闭旧连接——旧连接可能在 worker 线程中仍被使用）"""
         conn = duckdb.connect(self._db_file)
         conn.execute(f"SET memory_limit='{self._memory_limit}'")
         conn.execute("SET threads = 1")
         self._connections[idx] = conn
+        self._last_ok[idx] = time.time()
         print(f"[连接池] 连接 #{idx} 重建完成")
 
     def close_all(self):
@@ -174,6 +193,7 @@ class DuckDbEngine:
 
     _instance: Optional["DuckDbEngine"] = None
     _pool: Optional[ConnectionPool] = None
+    _query_executor: Optional[ThreadPoolExecutor] = None
     _loaded: bool = False
     _row_count: int = 0
     _mapping_loaded: bool = False
@@ -202,10 +222,15 @@ class DuckDbEngine:
             if self._pool:
                 self._pool.close_all()
 
+            # 初始化查询线程池（独立于 uvicorn 事件循环）
+            if self._query_executor is None:
+                self._query_executor = ThreadPoolExecutor(max_workers=4)
+                print(f"[查询线程池] 初始化完成: 4 workers")
+
             # ---- 环境判断：持久化 vs 内存模式 ----
             is_persistent = os.getenv("STARQUERY_DB_MODE", "").lower() == "persistent"
 
-            pool_size = 2 if is_persistent else 1
+            pool_size = 6 if is_persistent else 1
 
             if is_persistent:
                 db_file = "/tmp/star-query.duckdb"
@@ -277,6 +302,7 @@ class DuckDbEngine:
                 if pool_size == 1:
                     # 把 master 作为池中唯一连接
                     self._pool._connections[0] = master
+                    self._pool._last_ok[0] = time.time()  # 标记为健康
                     self._pool._initialized = True
                     if mapping_df is not None:
                         master.register("drug_mapping", mapping_df)
@@ -288,6 +314,9 @@ class DuckDbEngine:
 
             self._loaded = True
             self._mapping_loaded = True
+
+            # 创建预聚合热数据表（后台执行，不阻塞加载流程）
+            self._build_aggregate_tables()
 
             info = self._get_info()
             print(f"[DuckDB] 加载完成: {info['total_rows']} 行 × {info['total_cols']} 列")
@@ -350,6 +379,99 @@ class DuckDbEngine:
 
         return {"total_rows": 0, "total_cols": 0, "columns": [], "mapping": None}
 
+    def _build_aggregate_tables(self):
+        """创建预聚合热数据表（P0-3a）
+        
+        三张表：pre_agg（全局统计）、disease_agg（疾病维度）、monthly_agg（月度趋势）
+        幂等：每次先删再建，确保数据最新
+        """
+        if not self._loaded or not self._pool:
+            return
+
+        try:
+            conn = self._pool.get()
+            if conn is None:
+                print("[预聚合] 跳过：无可用连接")
+                return
+
+            # 检查 data 表是否有数据
+            row_count = conn.execute("SELECT COUNT(*) FROM data").fetchone()[0]
+            if row_count == 0:
+                print("[预聚合] 跳过：data 表为空")
+                return
+
+            start = time.time()
+
+            # --- pre_agg: 全局统计 ---
+            conn.execute("DROP TABLE IF EXISTS pre_agg")
+            conn.execute("""
+                CREATE TABLE pre_agg AS
+                SELECT
+                    COUNT(DISTINCT 场景ID) AS 总场景数,
+                    SUM(CASE WHEN 交易是否达成 = '是' THEN 1 ELSE 0 END) AS 成交数,
+                    COALESCE(SUM(CASE WHEN 交易是否达成 = '是' THEN 1 ELSE 0 END) * 1.0 /
+                        NULLIF(COUNT(DISTINCT 场景ID), 0), 0) AS 成交率,
+                    SUM(CASE WHEN 是否问症 = '是' THEN 1 ELSE 0 END) AS 问症数,
+                    COALESCE(SUM(CASE WHEN 是否问症 = '是' THEN 1 ELSE 0 END) * 1.0 /
+                        NULLIF(COUNT(DISTINCT 场景ID), 0), 0) AS 问症率,
+                    SUM(CASE WHEN 是否关键信息到达 = '是' THEN 1 ELSE 0 END) AS 关键信息到达数,
+                    COALESCE(SUM(CASE WHEN 是否关键信息到达 = '是' THEN 1 ELSE 0 END) * 1.0 /
+                        NULLIF(COUNT(DISTINCT 场景ID), 0), 0) AS 关键信息到达率,
+                    COUNT(DISTINCT 门店ID) AS 门店数,
+                    COUNT(DISTINCT 店员ID) AS 店员数
+                FROM data
+            """)
+            pre_rows = conn.execute("SELECT COUNT(*) FROM pre_agg").fetchone()[0]
+
+            # --- disease_agg: 按疾病 ---
+            conn.execute("DROP TABLE IF EXISTS disease_agg")
+            conn.execute("""
+                CREATE TABLE disease_agg AS
+                SELECT
+                    疾病名称,
+                    COUNT(DISTINCT 场景ID) AS 场景数,
+                    SUM(CASE WHEN 交易是否达成 = '是' THEN 1 ELSE 0 END) AS 成交数,
+                    COALESCE(SUM(CASE WHEN 交易是否达成 = '是' THEN 1 ELSE 0 END) * 1.0 /
+                        NULLIF(COUNT(DISTINCT 场景ID), 0), 0) AS 成交率,
+                    SUM(CASE WHEN 是否问症 = '是' THEN 1 ELSE 0 END) AS 问症数,
+                    COALESCE(SUM(CASE WHEN 是否问症 = '是' THEN 1 ELSE 0 END) * 1.0 /
+                        NULLIF(COUNT(DISTINCT 场景ID), 0), 0) AS 问症率
+                FROM data
+                WHERE 疾病名称 IS NOT NULL AND 疾病名称 != ''
+                GROUP BY 疾病名称
+                ORDER BY 场景数 DESC
+            """)
+            disease_rows = conn.execute("SELECT COUNT(*) FROM disease_agg").fetchone()[0]
+
+            # --- monthly_agg: 月度趋势 ---
+            conn.execute("DROP TABLE IF EXISTS monthly_agg")
+            conn.execute("""
+                CREATE TABLE monthly_agg AS
+                SELECT
+                    strftime(ydate, '%Y-%m') AS 月份,
+                    COUNT(DISTINCT 场景ID) AS 场景数,
+                    SUM(CASE WHEN 交易是否达成 = '是' THEN 1 ELSE 0 END) AS 成交数,
+                    COALESCE(SUM(CASE WHEN 交易是否达成 = '是' THEN 1 ELSE 0 END) * 1.0 /
+                        NULLIF(COUNT(DISTINCT 场景ID), 0), 0) AS 成交率
+                FROM data
+                WHERE ydate IS NOT NULL
+                GROUP BY 月份
+                ORDER BY 月份
+            """)
+            monthly_rows = conn.execute("SELECT COUNT(*) FROM monthly_agg").fetchone()[0]
+
+            elapsed = (time.time() - start) * 1000
+            print(f"[预聚合] 完成: pre_agg={pre_rows}行, disease_agg={disease_rows}行, monthly_agg={monthly_rows}行 ({elapsed:.0f}ms)")
+        except Exception as e:
+            print(f"[预聚合] 失败 (不影响主流程): {e}")
+
+    def shutdown_executor(self):
+        """关闭查询线程池"""
+        if self._query_executor:
+            self._query_executor.shutdown(wait=False)
+            self._query_executor = None
+            print("[查询线程池] 已关闭")
+
     def get_drug_mapping_df(self) -> pd.DataFrame:
         """返回 drug_mapping 的 pandas DataFrame"""
         try:
@@ -361,25 +483,21 @@ class DuckDbEngine:
     def _execute_with_timeout(self, conn: duckdb.DuckDBPyConnection,
                               sql: str, timeout_sec: int = 15):
         """
-        在指定连接上执行 DuckDB 查询，带超时保护。
-        超时通过 conn.interrupt() 中断 DuckDB 内部执行。
+        在独立线程中执行 DuckDB 查询，带真正超时保护。
+        
+        利用 ThreadPoolExecutor 将 DuckDB 查询隔离到独立线程中执行，
+        利用 future.result(timeout=...) 实现硬超时。
+        超时后不调用 conn.interrupt()（可能留下不一致状态），
+        而是由调用方标记连接重建。
         """
-        timer = None
-        def _interrupt():
-            try:
-                conn.interrupt()
-            except Exception:
-                pass
+        if self._query_executor is None:
+            self._query_executor = ThreadPoolExecutor(max_workers=4)
 
+        future = self._query_executor.submit(conn.execute, sql)
         try:
-            if timeout_sec > 0:
-                timer = threading.Timer(timeout_sec, _interrupt)
-                timer.daemon = True
-                timer.start()
-            return conn.execute(sql)
-        finally:
-            if timer:
-                timer.cancel()
+            return future.result(timeout=timeout_sec)
+        except FutureTimeoutError:
+            raise TimeoutError(f"查询执行超时 ({timeout_sec}s)")
 
     def execute(self, sql: str) -> dict:
         """
@@ -406,8 +524,16 @@ class DuckDbEngine:
             sql_checked += f" LIMIT {settings.MAX_ROWS}"
 
         try:
-            # 从连接池取健康连接
+            # 从连接池取健康连接（非阻塞）
             conn = self._pool.get()
+            if conn is None:
+                return {
+                    "success": False,
+                    "error": "服务繁忙，所有查询连接均在执行中，请稍后重试",
+                    "rows": [],
+                    "total_rows": 0,
+                    "elapsed_ms": 0,
+                }
             start = time.time()
             result = self._execute_with_timeout(conn, sql_checked, timeout_sec=15)
             df = result.fetchdf()
@@ -424,6 +550,21 @@ class DuckDbEngine:
                 "rows": rows,
                 "total_rows": len(rows),
                 "elapsed_ms": round(elapsed, 2),
+            }
+        except TimeoutError:
+            # 超时：标记连接为不健康，下次 get() 会重建
+            # 不调用 conn.interrupt() — 线程池中的 worker 线程仍在执行，
+            # 但连接已被丢弃，重建后不影响新查询
+            try:
+                self._pool.mark_unhealthy(conn)
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "error": "查询超时，系统已自动恢复",
+                "rows": [],
+                "total_rows": 0,
+                "elapsed_ms": 0,
             }
         except Exception as e:
             return {
