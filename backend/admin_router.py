@@ -1113,3 +1113,32 @@ def list_download_records(
 ):
     """全平台数据导出下载记录"""
     return get_all_downloads(page=page, limit=limit)
+
+
+
+# ============================================================
+# 数据增量加载（运行时，不重启服务）
+# ============================================================
+
+from pydantic import BaseModel
+
+
+class IncrementalLoadRequest(BaseModel):
+    parquet_path: str
+
+
+@router.post("/incremental-load")
+def incremental_load(
+    req: IncrementalLoadRequest,
+    admin: str = Depends(_require_admin),
+):
+    """运行时增量加载数据（不重启服务）
+
+    将 parquet 文件中的数据写入现有 DuckDB 表，
+    自动去重（按日期范围）并重建索引。
+    全程服务不中断。
+    """
+    from sql_engine import engine
+
+    result = engine.incremental_load(req.parquet_path)
+    return result

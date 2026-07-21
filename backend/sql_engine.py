@@ -387,6 +387,120 @@ class DuckDbEngine:
 
         return {"total_rows": 0, "total_cols": 0, "columns": [], "mapping": None}
 
+    def incremental_load(self, parquet_path: str) -> dict:
+        """运行时增量加载数据（不重启服务）
+
+        将 parquet 文件中的数据 INSERT 到现有 data 表，
+        然后重建 drug_index 和预聚合表。
+
+        流程：
+        1. 获取增量 parquet 的日期范围（用于去重）
+        2. 从 data 表 DELETE 目标日期的旧数据（避免重复）
+        3. INSERT 增量数据到 data
+        4. 行数更新
+        5. 重建 drug_index（~14s）
+        6. 重建预聚合表（~2s）
+
+        Args:
+            parquet_path: 增量 parquet 文件路径
+
+        Returns:
+            dict: {success, incr_rows, data_rows, elapsed_ms, details}
+        """
+        import time
+        import os as _os
+
+        start = time.time()
+        result = {
+            "success": False,
+            "incr_rows": 0,
+            "data_rows": 0,
+            "elapsed_ms": 0,
+            "details": "",
+        }
+
+        if not _os.path.exists(parquet_path):
+            result["details"] = f"文件不存在: {parquet_path}"
+            print(f"[增量加载] 失败: 文件不存在 {parquet_path}")
+            return result
+
+        if not self._pool or not self._loaded:
+            result["details"] = "引擎未初始化，请先调用 load_data()"
+            return result
+
+        try:
+            conn = self._pool.get()
+            if conn is None:
+                result["details"] = "无可用连接"
+                return result
+
+            # Step 1: 获取增量 parquet 信息
+            date_info = conn.execute(
+                "SELECT MIN(ydate), MAX(ydate), COUNT(*) FROM read_parquet(?)",
+                [parquet_path]
+            ).fetchone()
+
+            min_date, max_date, incr_rows = date_info
+
+            if incr_rows is None or incr_rows == 0:
+                result["success"] = True
+                result["details"] = "增量文件为空，无操作"
+                result["elapsed_ms"] = round((time.time() - start) * 1000, 2)
+                return result
+
+            print(f"[增量加载] 文件: {parquet_path} ({incr_rows:,} 行, "
+                  f"日期: {min_date} ~ {max_date})")
+
+            # Step 2: 从 data 表删除目标日期的旧数据（避免重复）
+            # 查询旧数据中目标日期的行数
+            old_count = conn.execute(
+                "SELECT COUNT(*) FROM data WHERE ydate >= ? AND ydate <= ?",
+                [min_date, max_date]
+            ).fetchone()[0]
+
+            if old_count > 0:
+                conn.execute(
+                    "DELETE FROM data WHERE ydate >= ? AND ydate <= ?",
+                    [min_date, max_date]
+                )
+                print(f"[增量加载] 已删除 {old_count:,} 行旧数据 (日期: {min_date} ~ {max_date})")
+
+            # Step 3: INSERT 增量数据
+            conn.execute(
+                "INSERT INTO data SELECT * FROM read_parquet(?)",
+                [parquet_path]
+            )
+            print(f"[增量加载] 已插入 {incr_rows:,} 行增量数据")
+
+            # Step 4: 更新行数
+            new_count = conn.execute("SELECT COUNT(*) FROM data").fetchone()[0]
+            with self._lock:
+                self._row_count = new_count
+
+            # Step 5: 重建 drug_index
+            self._build_drug_index()
+
+            # Step 6: 重建预聚合表
+            self._build_aggregate_tables()
+
+            elapsed = (time.time() - start) * 1000
+            result["success"] = True
+            result["incr_rows"] = int(incr_rows)
+            result["data_rows"] = int(new_count)
+            result["deleted_rows"] = int(old_count)
+            result["elapsed_ms"] = round(elapsed, 2)
+            result["details"] = (f"增量 {incr_rows:,} 行 (删除 {old_count:,} 行旧数据), "
+                                 f"data表总行数 {new_count:,}")
+
+            print(f"[增量加载] 完成: +{incr_rows:,} 行, "
+                  f"data总行数 {new_count:,} ({elapsed:.0f}ms)")
+
+        except Exception as e:
+            result["details"] = str(e)
+            print(f"[增量加载] 失败: {e}")
+
+        return result
+
     def _build_aggregate_tables(self):
         """创建预聚合热数据表（P0-3a）
         
