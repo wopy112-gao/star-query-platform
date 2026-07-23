@@ -19,7 +19,7 @@ class Settings:
     """应用配置"""
     # ---- 管理员账号 ----
     ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
-    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin888")
+    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin888")  # fallback 兼容旧部署，实际由 .env 提供
 
     # ---- JWT 配置 ----
     JWT_SECRET: str = os.getenv("JWT_SECRET", "change-this-to-a-random-secret-key-please")

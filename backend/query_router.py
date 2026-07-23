@@ -427,7 +427,7 @@ def _build_explanation(sql: str, question: str, source: str) -> ExplanationInfo:
     # 9. 数据源
     notes.append(ExplanationItem(
         label="数据源",
-        content=f"星宝语料场景数据库（{SCHEMA_KNOWLEDGE['total_rows']}行 × {len(SCHEMA_KNOWLEDGE['columns'])}列）"
+        content=f"星宝语料场景数据库（{engine.row_count:,}行 × {len(SCHEMA_KNOWLEDGE['columns'])}列）"
     ))
 
     # 10. 来源标注

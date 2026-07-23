@@ -26,11 +26,13 @@ import pandas as pd
 # 配置
 # ============================================================
 
-CH_HOST = "cc-2ze4vp6kio9ns5605.public.clickhouse.ads.aliyuncs.com"
-CH_PORT = 8123
-CH_USER = "yaoxin_ai_select"
-CH_PASS = "4-s7D4HHcR8df3fh8kSO"
-CH_DB = "yaoxin_ai"
+# 从环境变量读取凭证（.env → EnvironmentFile → export）
+# 不带 fallback——缺失应直接报错，防止无意识使用默认值
+CH_HOST = os.environ["CH_HOST"]
+CH_PORT = int(os.environ.get("CH_PORT", "8123"))
+CH_USER = os.environ["CH_USER"]
+CH_PASS = os.environ["CH_PASS"]
+CH_DB = os.environ.get("CH_DB", "yaoxin_ai")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "data")

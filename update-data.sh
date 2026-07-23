@@ -86,19 +86,13 @@ echo -e "${GREEN}[3/4]${NC} 更新配置..."
 sed -i "s|DATA_PATH=.*|DATA_PATH=$PARQUET_FILE|" "$ENV_FILE"
 echo "  ✅ .env → DATA_PATH=$PARQUET_FILE"
 
-# ---- 更新 schema_knowledge.py ----
-sed -i "s|\"total_rows\": [0-9]*|\"total_rows\": $TOTAL_ROWS|" "$SCHEMA_FILE"
 sed -i "s|\"source\": \".*\"|\"source\": \"$PARQUET_FILE\"|" "$SCHEMA_FILE"
-echo "  ✅ schema_knowledge.py → total_rows=$TOTAL_ROWS"
+echo "  ✅ schema_knowledge.py → source=$PARQUET_FILE"
 
 # ---- 重启后端 ----
 echo ""
 echo -e "${GREEN}[4/4]${NC} 重启后端服务..."
-kill $(lsof -ti:8000 2>/dev/null) 2>/dev/null || true
-sleep 1
-
-cd "$BACKEND_DIR"
-nohup $PYTHON -m uvicorn app:app --host 0.0.0.0 --port 8000 --log-level error > /tmp/starquery-8000.log 2>&1 &
+bash "$SCRIPT_DIR/safe-restart.sh" --prod
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════╗${NC}"

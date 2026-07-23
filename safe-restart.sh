@@ -26,7 +26,7 @@ PROD_PORT=8000
 TEST_PORT=8002
 PROD_DIR="/root/.lightclaw/workspace/star-query"
 TEST_DIR="/root/.lightclaw/workspace/star-query-test"
-HEALTH_TIMEOUT=30  # 健康检查最长等待（秒）
+HEALTH_TIMEOUT=90  # 健康检查最长等待（秒）
 HEALTH_INTERVAL=3  # 每次轮询间隔（秒）
 
 # ---- 检测环境 ----

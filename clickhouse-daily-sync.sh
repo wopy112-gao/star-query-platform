@@ -12,6 +12,9 @@ STAR_QUERY_DIR="/root/.lightclaw/workspace/star-query"
 LOG_FILE="/var/log/clickhouse-daily-sync.log"
 PYTHON=/root/.lightclaw/venv/bin/python3
 
+# 加载 .env 环境变量（凭证集中管理，不入代码）
+set -a; source "$STAR_QUERY_DIR/.env"; set +a
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] =========================" >> "$LOG_FILE"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始增量同步..." >> "$LOG_FILE"
 
@@ -60,19 +63,15 @@ print(f'  文件大小: {os.path.getsize(\"$MERGED_FILE\")/1024/1024:.1f} MB')
 mv "$MERGED_FILE" "$FULL_FILE"
 echo "  ✅ 已合并增量数据到全量文件" >> "$LOG_FILE"
 
-# ---- Step 3: 更新 schema_knowledge 行数 ----
-TOTAL_ROWS=$($PYTHON -c "import pandas as pd; print(len(pd.read_parquet('/root/All_data_ch_full.parquet')))")
-sed -i "s|\"total_rows\": [0-9]*|\"total_rows\": $TOTAL_ROWS|" "$STAR_QUERY_DIR/backend/schema_knowledge.py"
-echo "  ✅ 更新正式 schema_knowledge: total_rows=$TOTAL_ROWS" >> "$LOG_FILE"
-
-# ---- Step 4: 运行时增量加载（API，不重启） ----
+# ---- Step 3: 运行时增量加载（API，不重启） ----
+# total_rows 不再用 sed 改 schema_knowledge.py，改为查询时从 engine.row_count 动态获取
 echo "  📋 调用 API 增量加载..." >> "$LOG_FILE"
 
 # 获取 Admin Token
 ADMIN_TOKEN=$($PYTHON -c "
-import requests, json
+import os, requests, json
 r = requests.post('http://localhost:8000/api/auth/login',
-    json={'username':'admin','password':'admin888'})
+    json={'username':'admin','password': os.environ.get('ADMIN_PASSWORD', 'admin888')})
 print(json.loads(r.text)['token'])
 " 2>/dev/null)
 
@@ -127,9 +126,6 @@ TEST_FULL_FILE="/root/All_data_ch_full_test.parquet"
 echo "  📋 同步全量文件到测试环境..." >> "$LOG_FILE"
 cp "$FULL_FILE" "$TEST_FULL_FILE"
 echo "  ✅ 测试环境全量文件已更新" >> "$LOG_FILE"
-
-sed -i "s|\"total_rows\": [0-9]*|\"total_rows\": $TOTAL_ROWS|" "$TEST_DIR/backend/schema_knowledge.py"
-echo "  ✅ 更新测试 schema_knowledge: total_rows=$TOTAL_ROWS" >> "$LOG_FILE"
 
 # 测试环境也尝试增量加载
 if [ -z "$ADMIN_TOKEN" ]; then

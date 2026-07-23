@@ -17,7 +17,7 @@ from urllib.error import URLError
 # ---- 配置 ----
 API_BASE = "http://localhost:8000"
 USERNAME = "admin"
-PASSWORD = "admin888"
+PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin888")
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 # ---- 工具函数 ----

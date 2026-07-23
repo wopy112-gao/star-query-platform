@@ -41,7 +41,7 @@ TEST_CONFIG = {
 PROD_CONFIG = {
     "port": 8000,
     "username": "admin",
-    "password": "admin888",
+    "password": os.environ.get("ADMIN_PASSWORD", "admin888"),
 }
 
 

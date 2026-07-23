@@ -19,10 +19,10 @@ import pandas as pd
 # ============================================================
 # 配置
 # ============================================================
-CH_HOST = "cc-2ze4vp6kio9ns5605.public.clickhouse.ads.aliyuncs.com"
-CH_PORT = 8123
-CH_USER = "yaoxin_ai_select"
-CH_PASS = "4-s7D4HHcR8df3fh8kSO"
+CH_HOST = os.environ.get("CH_HOST", "cc-2ze4vp6kio9ns5605.public.clickhouse.ads.aliyuncs.com")
+CH_PORT = int(os.environ.get("CH_PORT", "8123"))
+CH_USER = os.environ.get("CH_USER", "yaoxin_ai_select")
+CH_PASS = os.environ.get("CH_PASS", "4-s7D4HHcR8df3fh8kSO")
 
 STAR_DIR = "/root/.lightclaw/workspace/star-query"
 FULL_FILE = "/root/All_data_ch_full.parquet"

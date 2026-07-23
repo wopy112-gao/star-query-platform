@@ -15,10 +15,10 @@ from datetime import date
 import clickhouse_connect
 import pandas as pd
 
-CH_HOST = "cc-2ze4vp6kio9ns5605.public.clickhouse.ads.aliyuncs.com"
-CH_PORT = 8123
-CH_USER = "yaoxin_ai_select"
-CH_PASS = "4-s7D4HHcR8df3fh8kSO"
+CH_HOST = os.environ.get("CH_HOST", "cc-2ze4vp6kio9ns5605.public.clickhouse.ads.aliyuncs.com")
+CH_PORT = int(os.environ.get("CH_PORT", "8123"))
+CH_USER = os.environ.get("CH_USER", "yaoxin_ai_select")
+CH_PASS = os.environ.get("CH_PASS", "4-s7D4HHcR8df3fh8kSO")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PATH = os.path.join(SCRIPT_DIR, "data", "egg_mapping.parquet")
