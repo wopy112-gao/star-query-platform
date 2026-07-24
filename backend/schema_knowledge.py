@@ -1,9 +1,55 @@
 """星宝语料场景查询系统 — Schema 知识文件
 
 用于 Moss 翻译自然语言为 SQL 时查询的表结构知识。
+
+v2 改造：从 models/semantic_model.yaml 加载，支持热加载。
+YAML 加载失败时使用 Python 硬编码兜底。
 """
 
-SCHEMA_KNOWLEDGE = {
+from __future__ import annotations
+import sys
+import importlib
+import json
+from pathlib import Path
+
+# 将项目根目录加入 Python 路径（使 models/ 包可从 backend/ 目录下导入）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_YAML_LOADER_PATH = _PROJECT_ROOT / "models" / "yaml_loader.py"
+
+# 直接通过文件路径加载 YamlLoader，避免包命名冲突
+if _YAML_LOADER_PATH.exists():
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("_yaml_loader_internal", str(_YAML_LOADER_PATH))
+    _yaml_loader_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_yaml_loader_mod)
+    YamlLoader = _yaml_loader_mod.YamlLoader
+else:
+    raise ImportError(f"yaml_loader.py 不存在: {_YAML_LOADER_PATH}")
+
+# ============================================================
+# YAML 加载路径
+# ============================================================
+
+_SCHEMA_YAML = Path(__file__).resolve().parent.parent / "models" / "semantic_model.yaml"
+
+
+def _yaml_to_schema(schema_from_yaml: dict) -> dict:
+    """将 YAML 格式转换为 SCHEMA_KNOWLEDGE 格式"""
+    return {
+        "table_name": schema_from_yaml.get("table_name", "data"),
+        "source": schema_from_yaml.get("source", ""),
+        "total_rows": schema_from_yaml.get("total_rows", "动态（查询时从 engine.row_count 获取）"),
+        "columns": schema_from_yaml.get("columns", []),
+        "business_rules": [r["text"] for r in schema_from_yaml.get("business_rules", [])],
+        "query_tips": [t["text"] for t in schema_from_yaml.get("query_tips", [])],
+    }
+
+
+# ============================================================
+# 硬编码兜底（YAML 加载失败时使用）
+# ============================================================
+
+_FALLBACK_SCHEMA = {
     "table_name": "data",
     "source": "/root/All_data_ch_full.parquet",
     "total_rows": "动态（查询时从 engine.row_count 获取）",
@@ -46,7 +92,6 @@ SCHEMA_KNOWLEDGE = {
         {"name": "活动满意度", "type": "VARCHAR", "description": "顾客对活动的满意度"},
         {"name": "活动介绍", "type": "VARCHAR", "description": "门店活动的主要信息文本"},
         {"name": "场景解析来源", "type": "VARCHAR", "description": "场景数据的解析来源：AI自动化/人工"},
-        # ↓↓↓ 2026-06-11 新增字段 ↓↓↓
         {"name": "店员提及药品JSON", "type": "VARCHAR", "description": "对话中药师说出的药品名(JSON数组)"},
         {"name": "店员推荐药品JSON", "type": "VARCHAR", "description": "对话中药师主动推荐给顾客的药品(JSON数组)"},
         {"name": "用药人年龄分层", "type": "VARCHAR", "description": "用药人的大致年龄段，如：青壮年、老年人、儿童"},
@@ -58,14 +103,11 @@ SCHEMA_KNOWLEDGE = {
         {"name": "是否商用", "type": "BIGINT", "description": "数据是否达到商用标准：1=是,0=否（过滤高质量数据）"},
         {"name": "切割置信度分值", "type": "DOUBLE", "description": "对话切割算法的置信度分值，0~1之间"},
         {"name": "切割完整度分值", "type": "DOUBLE", "description": "对话切割算法的完整度分值，0~1之间"},
-        # ↑↑↑ 新增字段结束 ↑↑↑
-        # ↓↓↓ 2026-07-09 彩蛋任务字段 ↓↓↓
         {"name": "彩蛋任务ID", "type": "BIGINT", "description": "彩蛋任务ID，>0 表示该场景命中彩蛋疾病分母，=0 表示未命中"},
         {"name": "彩蛋药品名称", "type": "VARCHAR", "description": "彩蛋任务的关联药品名称"},
         {"name": "彩蛋标题", "type": "VARCHAR", "description": "彩蛋任务的标题"},
         {"name": "是否分子1=是(发分)", "type": "BIGINT", "description": "是否命中彩蛋分子（即店员提及并传递了关键信息）：1=是(发分),0=否"},
         {"name": "命中原因", "type": "VARCHAR", "description": "彩蛋任务的命中原因说明，包含分母匹配依据和分子条件判断依据"},
-        # ↑↑↑ 彩蛋任务字段结束 ↑↑↑
     ],
     "business_rules": [
         "场景ID去重：统计场景数必须用 COUNT(DISTINCT 场景ID)",
@@ -94,6 +136,26 @@ SCHEMA_KNOWLEDGE = {
         "彩蛋命中原因分析：`命中原因` 字段包含详细的分子/分母判断依据文本",
     ],
 }
+
+
+# ============================================================
+# 全局加载
+# ============================================================
+
+def _load_schema() -> dict:
+    """从 YAML 加载 Schema，失败时使用硬编码兜底"""
+    raw = YamlLoader.load_with_fallback(_SCHEMA_YAML, _FALLBACK_SCHEMA)
+    if raw is _FALLBACK_SCHEMA:
+        return raw
+    try:
+        return _yaml_to_schema(raw)
+    except Exception as e:
+        print(f"[Schema] YAML 转换失败: {e}，使用 fallback")
+        return _FALLBACK_SCHEMA
+
+
+# 全局变量（兼容原有 import SCHEMA_KNOWLEDGE 的代码）
+SCHEMA_KNOWLEDGE = _load_schema()
 
 
 def get_schema_text() -> str:

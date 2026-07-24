@@ -42,7 +42,7 @@ class ExportRequest(BaseModel):
 class QueryInfo(BaseModel):
     natural: str = Field(..., description="自然语言问题")
     sql: str = Field(..., description="实际执行的 SQL")
-    source: Literal["template", "moss", "cache", "llm_intent", "template_recovered", "llm_recovered"] = Field(..., description="SQL 来源")
+    source: Literal["template", "moss", "cache", "llm_intent", "template_recovered", "llm_recovered", "auto_healed"] = Field(..., description="SQL 来源")
     elapsed_ms: float = Field(..., description="执行耗时（毫秒）")
 
 

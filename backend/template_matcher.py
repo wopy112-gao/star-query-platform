@@ -5,23 +5,62 @@
 2. 新增 match_by_intent() 方法，支持四元组匹配
 3. 新增 get_similar_templates() 方法，供 LLM 兜底时取参考示例
 4. 保留 match(question) 原有的字符串匹配方式（向后兼容）
+
+v2 改造：从 models/templates.yaml 加载模板，YAML 加载失败时使用 Python 硬编码兜底。
 """
 
 from __future__ import annotations
+import sys
+from pathlib import Path
 
 import re
 from typing import Optional
 
 from intent_schemas import QueryIntent
 
+# 将项目根目录加入 Python 路径（使 models/ 包可从 backend/ 目录下导入）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_YAML_LOADER_PATH = _PROJECT_ROOT / "models" / "yaml_loader.py"
+
+# 直接通过文件路径加载 YamlLoader，避免包命名冲突
+if _YAML_LOADER_PATH.exists():
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("_yaml_loader_internal", str(_YAML_LOADER_PATH))
+    _yaml_loader_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_yaml_loader_mod)
+    YamlLoader = _yaml_loader_mod.YamlLoader
+else:
+    raise ImportError(f"yaml_loader.py 不存在: {_YAML_LOADER_PATH}")
+
 # ============================================================
-# 结构化模板清单
+# YAML 加载
+# ============================================================
+
+_TEMPLATES_YAML = Path(__file__).resolve().parent.parent / "models" / "templates.yaml"
+
+
+def _load_templates() -> list[dict]:
+    """从 YAML 加载模板，失败时返回 None（使用硬编码兜底）"""
+    raw = YamlLoader.load_with_fallback(_TEMPLATES_YAML, {})
+    templates = raw.get("templates")
+    if templates is None:
+        print("[TemplateLoader] YAML 未包含模板数据，使用硬编码兜底")
+        return None
+    print(f"[TemplateLoader] 已加载 {len(templates)} 条模板（来源: templates.yaml）")
+    return templates
+
+
+_LOADED_TEMPLATES = _load_templates()
+
+# ============================================================
+# 结构化模板清单（硬编码兜底）
 # 每个模板由两组匹配条件组成：
 #   1. question_pattern（旧）：正则匹配用户问题字符串
 #   2. intent_key（新）：(pattern, agg, condition_types, dimension) 四元组
+# YAML 加载成功时，此数据仅作为兜底备用
 # ============================================================
 
-TEMPLATES = [
+_FALLBACK_TEMPLATES = [
     # ===== single_stat 单值统计 =====
     {
         "id": "t1",
@@ -411,6 +450,18 @@ TEMPLATES = [
         "chart_type": "table_only",
     },
 ]
+
+
+# ============================================================
+# 运行时加载：YAML 优先，硬编码兜底
+# ============================================================
+
+if _LOADED_TEMPLATES is not None:
+    TEMPLATES = _LOADED_TEMPLATES
+else:
+    TEMPLATES = _FALLBACK_TEMPLATES
+
+print(f"[TemplateMatcher] TEMPLATES 就绪: {len(TEMPLATES)} 条（来源: {'YAML' if _LOADED_TEMPLATES is not None else '硬编码'}）")
 
 
 class TemplateMatcher:

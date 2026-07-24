@@ -43,7 +43,7 @@ from models import (
 )
 from sql_engine import engine
 from template_matcher import matcher
-from sql_renderer import renderer
+from sql_renderer import renderer, ATC_DIMENSIONS
 from chart_builder import chart_builder
 from history_store import add_history, get_history, delete_history, clear_history
 from schema_knowledge import SCHEMA_KNOWLEDGE
@@ -75,113 +75,19 @@ router = APIRouter(prefix="/api", tags=["查询"])
 
 
 # ===== ATC Enrich（药品标准化字段补充） =====
-
-
-def _parse_drug_json(drug_json_str):
-    """解析药品 JSON 数组，返回药品名列表"""
-    if not drug_json_str or drug_json_str == '[]':
-        return []
-    try:
-        return _json.loads(drug_json_str)
-    except (_json.JSONDecodeError, TypeError):
-        return []
-
-
-def _lookup_atc(drug_name, mapping_df):
-    """查映射表，返回单个药品的 ATC 信息"""
-    if mapping_df is None or mapping_df.empty:
-        return None
-    match = mapping_df[mapping_df['原始药品名称'] == drug_name]
-    if len(match) == 0:
-        return None
-    row = match.iloc[0]
-    return {
-        'ATC编码': row.get('ATC编码', ''),
-        'ATC第3级': row.get('ATC第3级(药理亚组)', ''),
-        'ATC第1级': row.get('ATC第1级(解剖大类)', ''),
-        '中西药分类': row.get('中西药分类', ''),
-        '置信度': row.get('置信度', ''),
-    }
+# Phase 2.1：已由 drug_atc_index 表在 SQL 层提供 ATC 维度数据
 
 
 def enrich_query_results(rows):
-    """对查询结果逐行补充 ATC 标准化字段
-    
-    处理药品字段：顾客点名药品、场景提及药品、订单药品、店员提及药品JSON、店员推荐药品JSON
-    映射表未加载时正常降级（不加列）
-    所有返回行保证有相同的列（缺ATC信息的行对应列设为None）
+    """ATC 标准化字段补充
+
+    Phase 2.1 后：已由 drug_atc_index 表在 SQL 层完成，不再需要 Python 后处理。
+    保留函数签名以确保向后兼容。
+
+    Returns:
+        原样返回 rows
     """
-    if not rows:
-        return rows
-
-    mapping_df = engine.get_drug_mapping_df()
-    if mapping_df.empty:
-        return rows  # 映射表未加载，原样返回
-
-    drug_fields = ['顾客点名药品', '场景提及药品', '订单药品', '店员提及药品JSON', '店员推荐药品JSON']
-    # 所有可能的 ATC 后缀列名
-    atc_suffixes = ['_ATC编码', '_ATC分类', '_ATC大类', '_中西药', '_置信度', '_ATC映射']
-
-    enriched = []
-    # 第一遍：收集实际存在的 ATC 列名
-    all_atc_cols = set()
-    for row in rows:
-        for field in drug_fields:
-            if field not in row:
-                continue
-            raw_val = str(row[field]) if row[field] is not None else '[]'
-            drug_names = _parse_drug_json(raw_val)
-            if not drug_names:
-                continue
-            # 只要有药品数据，可能添加的ATC列
-            for suffix in atc_suffixes:
-                all_atc_cols.add(f'{field}{suffix}')
-
-    # 第二遍：每行统一补全列
-    for row in rows:
-        new_row = dict(row)
-        for field in drug_fields:
-            if field not in row:
-                continue
-            raw_val = str(row[field]) if row[field] is not None else '[]'
-            drug_names = _parse_drug_json(raw_val)
-            if not drug_names:
-                continue
-
-            primary_drug = drug_names[0]
-            atc_info = _lookup_atc(primary_drug, mapping_df)
-            if atc_info and atc_info.get('ATC编码'):
-                new_row[f'{field}_ATC编码'] = atc_info['ATC编码']
-                new_row[f'{field}_ATC分类'] = atc_info['ATC第3级']
-                new_row[f'{field}_ATC大类'] = atc_info['ATC第1级']
-                new_row[f'{field}_中西药'] = atc_info['中西药分类']
-                new_row[f'{field}_置信度'] = atc_info['置信度']
-
-            all_atc = []
-            for dn in drug_names:
-                info = _lookup_atc(dn, mapping_df)
-                if info and info.get('ATC编码'):
-                    all_atc.append(f'{dn}→{info["ATC编码"]}')
-            if all_atc:
-                new_row[f'{field}_ATC映射'] = '; '.join(all_atc)
-
-        # 补全缺失的 ATC 列（确保所有行有相同列）
-        for col in all_atc_cols:
-            if col not in new_row:
-                new_row[col] = None
-
-        enriched.append(new_row)
-
-    # 清理前端不需要展示的 ATC 映射字段
-    # （保留 enrich 内部计算，但返回前去掉，避免前端表格出现大量空列）
-    atc_remove_suffixes = ['_ATC分类', '_ATC编码', '_中西药', '_置信度', '_ATC大类', '_ATC映射']
-    for row in enriched:
-        for suf in atc_remove_suffixes:
-            for key in list(row.keys()):
-                if key.endswith(suf):
-                    del row[key]
-
-    return enriched
+    return rows
 
 
 # ===== SQL 交叉验证（新增） =====
@@ -310,6 +216,29 @@ def _execute_paginated(sql: str, page: int, page_size: int) -> dict:
     }
 
 
+# ===== 自动兜底（P2 异步自愈）=====
+
+
+def _sync_retry(question: str, original_sql: str) -> Optional[str]:
+    """1 轮同步兜底：重新调用 LLM 翻译
+    
+    所有 error 类型都尝试重试。走 fallback 路径（不带 intent），
+    与主路径的意图感知翻译形成差异化，增加拿到不同 SQL 的概率。
+    
+    返回 None = 兜底失败（走异步自愈）
+    返回 str = 兜底成功的新 SQL
+    """
+    try:
+        trans_result = llm_translate(question)
+        if trans_result.get("success") and trans_result.get("sql"):
+            new_sql = trans_result["sql"].strip()
+            if new_sql and not new_sql.startswith("--ERROR:"):
+                return new_sql
+    except Exception as e:
+        print(f"[自愈] _sync_retry 异常（不阻塞）: {e}")
+    return None
+
+
 # ===== 原始函数 =====
 
 
@@ -427,7 +356,7 @@ def _build_explanation(sql: str, question: str, source: str) -> ExplanationInfo:
     # 9. 数据源
     notes.append(ExplanationItem(
         label="数据源",
-        content=f"星宝语料场景数据库（{engine.row_count:,}行 × {len(SCHEMA_KNOWLEDGE['columns'])}列）"
+        content=f"星宝语料场景数据库（{SCHEMA_KNOWLEDGE['total_rows']}行 × {len(SCHEMA_KNOWLEDGE['columns'])}列）"
     ))
 
     # 10. 来源标注
@@ -522,9 +451,25 @@ def query(req: QueryRequest, username: str = Depends(get_current_user)):
         intent = intent_result.intent
         intent_key = intent.cache_key
 
+        # ---- Phase 2.1: ATC 维度检测（优先于缓存，避免旧缓存覆盖） ----
+        if (intent.dimension in ATC_DIMENSIONS
+              and intent.query_pattern in ("distribution", "top_n", "ranking")):
+            sql = renderer.render_atc_query(intent)
+            if sql == "__LLM_FALLBACK__":
+                print(f"[路由] ATC 渲染触发 fallback，走 LLM 兜底")
+                trans_result = llm_translate(question, intent=intent)
+                if not trans_result["success"]:
+                    return _query_fallback(question, scope_hint, username, req.page, req.page_size)
+                sql = trans_result["sql"]
+                chart_type = trans_result.get("chart_type", "auto")
+                source = "llm_intent"
+            else:
+                chart_type = "bar"
+                source = "template"
+                print(f"[路由] ATC 维度查询: {intent.dimension}")
+
         # 阶段1a: 结构化缓存命中
-        cache_hit = cache_lookup_by_intent(intent_key)
-        if cache_hit:
+        elif cache_hit := cache_lookup_by_intent(intent_key):
             sql = cache_hit["sql"]
             chart_type = cache_hit["chart_type"]
             source = "cache"
@@ -571,7 +516,12 @@ def query(req: QueryRequest, username: str = Depends(get_current_user)):
                 print(f"[意图校验] 问题「{question}」不一致: {'; '.join(intent_warnings)}")
 
                 # ---- 自动恢复：校验不通过 → 换路径重试 ----
-                if source == "template":
+                # ATC 维度查询跳过自动恢复（dai.前缀不属于 data 表，校验器误报）
+                if intent.dimension in ATC_DIMENSIONS:
+                    print(f"[意图校验] ATC 维度查询，跳过自动恢复（维度: {intent.dimension}）")
+                    quality_warnings = []  # ATC 校验误报不暴露给用户
+
+                elif source == "template":
                     # 模板匹配的 SQL 有问题 → 尝试 LLM 兜底
                     print(f"[恢复] 模板匹配校验不通过，尝试 LLM 替代...")
                     trans_result = llm_translate(question, intent=intent)
@@ -667,10 +617,35 @@ def query(req: QueryRequest, username: str = Depends(get_current_user)):
         result = engine.execute(sql)
 
         if not result["success"]:
+            # P2: 异步自愈 — 写 incident + 1 轮同步兜底
+            try:
+                from incident_writer import write_incident
+                write_incident(
+                    inc_type="sql_error",
+                    question=question,
+                    sql=sql,
+                    error=result["error"],
+                    intent_info=intent_result.intent.to_dict() if intent_result.success and intent_result.intent else None,
+                )
+            except Exception as e:
+                print(f"[自愈] incident 写入失败（不阻塞查询）: {e}")
+
+            # 1 轮同步兜底：所有 error 重新走 LLM 翻译
+            healed_sql = _sync_retry(question, sql)
+            if healed_sql:
+                healed_result = engine.execute(healed_sql)
+                if healed_result["success"]:
+                    result = healed_result
+                    sql = healed_sql
+                    source = "auto_healed"
+                    print(f"[自愈] ✓ 同步兜底成功: {question[:60]} → SQL 已替换")
+
+        if not result["success"]:
             add_history(question, sql, 0, success=False, username=username)
             return QueryResponse(
                 success=False,
                 error=result["error"],
+                hint="查询暂时失败，已记录问题，正在后台修复。请稍后重试。",
             )
 
         rows = result["rows"]
@@ -946,10 +921,34 @@ def _query_fallback(
         result = engine.execute(sql)
 
         if not result["success"]:
+            # P2: 异步自愈 — 写 incident + 1 轮同步兜底
+            try:
+                from incident_writer import write_incident
+                write_incident(
+                    inc_type="sql_error",
+                    question=question,
+                    sql=sql,
+                    error=result["error"],
+                )
+            except Exception as e:
+                print(f"[自愈] incident 写入失败（不阻塞查询）: {e}")
+
+            # 1 轮同步兜底：所有 error 重新走 LLM 翻译
+            healed_sql = _sync_retry(question, sql)
+            if healed_sql:
+                healed_result = engine.execute(healed_sql)
+                if healed_result["success"]:
+                    result = healed_result
+                    sql = healed_sql
+                    source = "auto_healed"
+                    print(f"[自愈] ✓ 同步兜底成功: {question[:60]} → SQL 已替换")
+
+        if not result["success"]:
             add_history(question, sql, 0, success=False, username=username)
             return QueryResponse(
                 success=False,
                 error=result["error"],
+                hint="查询暂时失败，已记录问题，正在后台修复。请稍后重试。",
             )
 
         rows = result["rows"]
@@ -1041,6 +1040,18 @@ def query_sql(req: SqlQueryRequest, username: str = Depends(get_current_user)):
     result = engine.execute(req.sql)
 
     if not result["success"]:
+        # P2: 写 incident 记录 SQL 执行失败（不做同步兜底 — 用户手动写的 SQL）
+        try:
+            from incident_writer import write_incident
+            write_incident(
+                inc_type="sql_error",
+                question=req.original_question or req.sql,
+                sql=req.sql,
+                error=result["error"],
+            )
+        except Exception:
+            pass
+
         add_history(req.sql, req.sql, 0, success=False, username=username)
         return QueryResponse(success=False, error=result["error"])
 

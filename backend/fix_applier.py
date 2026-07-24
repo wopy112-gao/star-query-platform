@@ -28,7 +28,13 @@ from typing import Optional
 
 _BACKEND_DIR = Path(__file__).resolve().parent
 _WORKSPACE_DIR = _BACKEND_DIR.parent.parent  # ~/.lightclaw/workspace
-_PROPOSAL_DIR = _WORKSPACE_DIR / "fix_proposals"
+# 优先用环境变量，方便测试环境隔离（scan_incidents.py 会设置 FIX_PROPOSALS_DIR）
+_PROPOSAL_DIR_ENV = os.environ.get("FIX_PROPOSALS_DIR")
+_PROPOSAL_DIR = (
+    Path(_PROPOSAL_DIR_ENV)
+    if _PROPOSAL_DIR_ENV
+    else _WORKSPACE_DIR / "fix_proposals"
+)
 _BACKUP_DIR = _WORKSPACE_DIR / "backups" / "fix_applier"
 
 # 可执行的操作类型 → 处理函数
@@ -106,10 +112,21 @@ class FixApplier:
         return pending
 
     def _classify(self, proposals: list[dict]) -> tuple[list, list, list]:
-        """按置信度分级"""
-        high = [p for p in proposals if p.get("confidence") == "high"]
-        medium = [p for p in proposals if p.get("confidence") == "medium"]
-        low = [p for p in proposals if p.get("confidence") == "low"]
+        """按置信度分级（exception → low：跳过自动修复）"""
+        high = []
+        medium = []
+        low = []
+        for p in proposals:
+            if p.get("exception"):
+                low.append(p)
+                continue
+            conf = p.get("confidence")
+            if conf == "high":
+                high.append(p)
+            elif conf == "medium":
+                medium.append(p)
+            else:
+                low.append(p)
         return high, medium, low
 
     # ============================================================

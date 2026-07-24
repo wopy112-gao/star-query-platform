@@ -7,6 +7,8 @@ v4 改造内容：
 2. Few-shot 示例按标签分类，动态选取 2-3 条（不再硬编码 18 条全部注入）
 3. 移除硬编码的业务规则/药品/疾病/地域列表（移入后处理层）
 4. 统一两条 Prompt 路径的结构（三段式：DDL + 示例 + 任务）
+
+v5 改造：从 models/examples.yaml 加载示例，YAML 加载失败时使用 Python 硬编码兜底。
 """
 
 import re
@@ -15,11 +17,45 @@ import time
 from typing import Optional
 from urllib import request as urllib_request
 from urllib.error import URLError
+from pathlib import Path
+import importlib.util
 
 from config import settings
 from schema_knowledge import SCHEMA_KNOWLEDGE
 from domain_knowledge import kb
 from intent_schemas import QueryIntent, Aggregation
+
+# 直接通过文件路径加载 YamlLoader，避免包命名冲突
+_YAML_LOADER_PATH = Path(__file__).resolve().parent.parent / "models" / "yaml_loader.py"
+if _YAML_LOADER_PATH.exists():
+    _spec = importlib.util.spec_from_file_location("_yaml_loader_internal", str(_YAML_LOADER_PATH))
+    _yaml_loader_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_yaml_loader_mod)
+    YamlLoader = _yaml_loader_mod.YamlLoader
+else:
+    raise ImportError(f"yaml_loader.py 不存在: {_YAML_LOADER_PATH}")
+
+# Instruction Engine（早加载，供 Prompt 构建使用）
+_INSTRUCTION_ENGINE_PATH = Path(__file__).resolve().parent.parent / "models" / "instruction_engine.py"
+if _INSTRUCTION_ENGINE_PATH.exists():
+    import sys
+    _spec_ie = importlib.util.spec_from_file_location("_instruction_engine", str(_INSTRUCTION_ENGINE_PATH))
+    _ie_mod = importlib.util.module_from_spec(_spec_ie)
+    sys.modules[_spec_ie.name] = _ie_mod  # 注册到 sys.modules 使 @dataclass 等装饰器正常工作
+    _spec_ie.loader.exec_module(_ie_mod)
+    instruction_engine = _ie_mod.engine
+else:
+    instruction_engine = None
+
+# 直接通过文件路径加载 YamlLoader，避免包命名冲突
+_YAML_LOADER_PATH = Path(__file__).resolve().parent.parent / "models" / "yaml_loader.py"
+if _YAML_LOADER_PATH.exists():
+    _spec = importlib.util.spec_from_file_location("_yaml_loader_internal", str(_YAML_LOADER_PATH))
+    _yaml_loader_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_yaml_loader_mod)
+    YamlLoader = _yaml_loader_mod.YamlLoader
+else:
+    raise ImportError(f"yaml_loader.py 不存在: {_YAML_LOADER_PATH}")
 
 # 确保领域知识引擎加载
 if not kb.is_loaded:
@@ -49,11 +85,25 @@ def _get_ddl() -> str:
 
 
 # ============================================================
-# 分类示例库
+# 分类示例库（从 YAML 加载，硬编码兜底）
 # ============================================================
 
-# 每条示例带标签，用于按意图动态选择
-CATEGORIZED_EXAMPLES = {
+_EXAMPLES_YAML = Path(__file__).resolve().parent.parent / "models" / "examples.yaml"
+
+
+def _load_examples() -> dict:
+    """从 YAML 加载示例库，失败时返回 None"""
+    raw = YamlLoader.load_with_fallback(_EXAMPLES_YAML, {})
+    categories = raw.get("categories")
+    if categories is None:
+        print("[Examples] YAML 未包含示例数据，使用硬编码兜底")
+        return None
+    total = sum(len(examples) for examples in categories.values())
+    print(f"[Examples] 已加载 {len(categories)} 分类, {total} 条示例（来源: examples.yaml）")
+    return categories
+
+
+_FALLBACK_EXAMPLES = {
     "通用统计": [
         {"question": "总场景数", "sql": "SELECT COUNT(DISTINCT 场景ID) AS 总场景数 FROM data"},
         {"question": "联合用药率", "sql": "SELECT ROUND(COUNT(DISTINCT CASE WHEN 是否联合用药='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 联合用药率 FROM data"},
@@ -90,6 +140,17 @@ CATEGORIZED_EXAMPLES = {
         {"question": "山东省有多少门店", "sql": "SELECT COUNT(DISTINCT 门店ID) AS 门店数 FROM data WHERE 省份='山东省'"},
     ],
 }
+
+
+# ============================================================
+# 运行时加载：YAML 优先，硬编码兜底
+# ============================================================
+
+_LOADED_EXAMPLES = _load_examples()
+if _LOADED_EXAMPLES is not None:
+    CATEGORIZED_EXAMPLES = _LOADED_EXAMPLES
+else:
+    CATEGORIZED_EXAMPLES = _FALLBACK_EXAMPLES
 
 
 def _select_examples(intent: Optional[QueryIntent], question: str = "", top_k: int = 2) -> list[dict]:
@@ -192,19 +253,7 @@ SYSTEM_PROMPT = """你是一个医药零售数据的 SQL 专家。
 根据用户问题生成 DuckDB SQL 查询语句。
 
 ## 数据库结构
-{ddl}
-
-## 关键规则
-- 场景数 = COUNT(DISTINCT 场景ID)
-- 药品匹配：用 LIKE '%关键词%'，同时查 顾客点名药品/场景提及药品/订单药品
-- 时间过滤：用 ydate 字段（格式 YYYY-MM-DD）
-- 成交判断：交易是否达成='是'
-- 地域过滤：省份='xx省' 或 城市 LIKE '%xx%'
-- 成交口径区分：
-  - 场景级（不限定药品）：交易是否达成='是'
-  - 商品级（限定药品）：交易是否达成='是' AND 订单药品 LIKE '%药品名%'
-- 明细查询不加 LIMIT（由前端分页控制）
-- 仅输出 SQL，不要额外解释
+{ddl}{instructions}
 
 ## 参考示例
 {examples}
@@ -223,8 +272,14 @@ def _build_prompt(question: str) -> list[dict]:
         for ex in examples
     ])
 
+    # 注入 Instructions
+    instructions_text = ""
+    if instruction_engine is not None:
+        instructions_text = instruction_engine.select_for_prompt(intent=None)
+
     system_prompt = SYSTEM_PROMPT.format(
         ddl=ddl,
+        instructions=instructions_text,
         examples=examples_section,
         question=question,
     )
@@ -242,14 +297,7 @@ INTENT_SYSTEM_PROMPT = """你是一个医药零售数据的 SQL 专家。
 已分析用户的意图（见下方结构化 JSON），请据此生成 DuckDB SQL。
 
 ## 数据库结构
-{ddl}
-
-## 关键规则
-- 场景数 = COUNT(DISTINCT 场景ID)
-- 药品匹配：用 LIKE '%关键词%'
-- 成交口径：场景级（交易是否达成='是'）| 商品级（交易是否达成='是' AND 订单药品 CONTAINS '药品名'）
-- 明细查询不加 LIMIT（由前端分页控制），分布查询按意图中的 limit 值
-- 仅输出 SQL，不要额外解释
+{ddl}{instructions}
 
 ## 参考示例
 {examples}
@@ -265,6 +313,11 @@ def _build_intent_prompt(intent: QueryIntent) -> list[dict]:
     """为结构化意图构建 Prompt（三段式：DDL + 动态示例 + 意图）"""
     ddl = _get_ddl()
 
+    # 注入 Instructions（基于意图标签）
+    instructions_text = ""
+    if instruction_engine is not None:
+        instructions_text = instruction_engine.select_for_prompt(intent=intent)
+
     # 动态选择示例
     examples = _select_examples(intent=intent, top_k=2)
     examples_section = "\n\n".join([
@@ -274,6 +327,7 @@ def _build_intent_prompt(intent: QueryIntent) -> list[dict]:
 
     system_prompt = INTENT_SYSTEM_PROMPT.format(
         ddl=ddl,
+        instructions=instructions_text,
         limit=intent.limit,
         examples=examples_section,
         raw_question=intent.raw_question,

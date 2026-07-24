@@ -28,8 +28,8 @@ from download_store import add_record, get_records
 # ---- 数据导出权限 ----
 EXPORT_ALLOWED_USERS: set[str] = {
     "admin",
-    "ella", "hubo", "liumd", "dongjl",  # 销售
-    "amy", "wim",                        # 授权用户
+    "ella", "hubo", "liumd", "dongjl", "jinzy",  # 销售
+    "amy", "wim",                                  # 授权用户
 }
 
 

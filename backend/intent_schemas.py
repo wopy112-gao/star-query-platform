@@ -141,6 +141,13 @@ class Dimension(str, Enum):
     CUT_CONFIDENCE_SCORE = "切割置信度分值"
     CUT_COMPLETENESS_SCORE = "切割完整度分值"
     ACTIVITY_TIME_RATIO = "活动时间占比"
+    # ↓↓↓ 2026-07-24 Phase 2.1 新增 ATC 维度 ↓↓↓
+    ATC_CHEMICAL_GROUP = "ATC化学亚组"         # ATC第4级(化学亚组)
+    ATC_PHARMACOLOGICAL = "ATC药理亚组"        # ATC第3级(药理亚组)
+    ATC_THERAPEUTIC = "ATC治疗亚组"            # ATC第2级(治疗亚组)
+    ATC_ANATOMICAL = "ATC解剖大类"             # ATC第1级(解剖大类)
+    ATC_CODE = "ATC编码"                       # ATC编码
+    ATC_CHEMICAL_SUBGROUP = "atc_chemical_subgroup"  # LLM自主创建的类型，值如 抗生素
 
     @classmethod
     def values(cls) -> list[str]:

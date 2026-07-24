@@ -1,0 +1,403 @@
+# 星宝语料场景查询系统 — 预置查询模板定义
+# v3 结构化模板（四元组匹配）
+# 版本：1.0
+
+templates:
+
+  # ===== single_stat 单值统计 =====
+
+  - id: t1
+    label: 总场景数
+    description: 查询数据集中的总独立场景数
+    question: 总场景数
+    question_pattern: "^总场景数$"
+    intent_key:
+      pattern: single_stat
+      agg: 场景数
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT 场景ID) AS 总场景数 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: t5
+    label: 问症率
+    description: 统计总体问症率
+    question: 问症率
+    question_pattern: "^(问症|问症率|询问症状)\\s*(率|统计|分析)?$"
+    intent_key:
+      pattern: single_stat
+      agg: 问症率
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT CASE WHEN 是否问症='是' THEN 场景ID END) AS 问症场景数, COUNT(DISTINCT 场景ID) AS 总场景数, ROUND(COUNT(DISTINCT CASE WHEN 是否问症='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 问症率 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: t6
+    label: 联合用药率
+    description: 统计总体联合用药率
+    question: 联合用药率
+    question_pattern: "^(联合用药|联合用药率)\\s*(率|统计|分析)?$"
+    intent_key:
+      pattern: single_stat
+      agg: 联合用药率
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT CASE WHEN 是否联合用药='是' THEN 场景ID END) AS 联合用药场景数, COUNT(DISTINCT 场景ID) AS 总场景数, ROUND(COUNT(DISTINCT CASE WHEN 是否联合用药='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 联合用药率 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: t10
+    label: 成交率
+    description: 统计总体成交率
+    question: 成交率
+    question_pattern: "^(成交|成交率|交易)\\s*(率|统计|分析)?$"
+    intent_key:
+      pattern: single_stat
+      agg: 成交率
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT CASE WHEN 交易是否达成='是' THEN 场景ID END) AS 成交场景数, COUNT(DISTINCT 场景ID) AS 总场景数, ROUND(COUNT(DISTINCT CASE WHEN 交易是否达成='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 成交率 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: t11
+    label: 关键信息到达率
+    description: 统计药师关键信息传递率
+    question: 关键信息到达率
+    question_pattern: "^(关键信息|信息到达|关键信息到达率)\\s*(率|统计|分析)?$"
+    intent_key:
+      pattern: single_stat
+      agg: 关键信息到达率
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT CASE WHEN 是否关键信息到达='是' THEN 场景ID END) AS 关键信息到达场景数, COUNT(DISTINCT 场景ID) AS 总场景数, ROUND(COUNT(DISTINCT CASE WHEN 是否关键信息到达='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 关键信息到达率 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: ts02
+    label: 成交场景数
+    description: 统计成交场景数
+    question: 成交场景数
+    question_pattern: "^成交场景数$"
+    intent_key:
+      pattern: single_stat
+      agg: 成交场景数
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT 场景ID) AS 成交场景数 FROM data WHERE 交易是否达成='是'"
+    chart_type: table_only
+
+  - id: ts07
+    label: 平均场景时长
+    description: 统计平均场景时长
+    question: 平均场景时长
+    question_pattern: "^(平均场景时长|场景平均时长|场景时长平均值)\\s*(统计|分析)?$"
+    intent_key:
+      pattern: single_stat
+      agg: 平均场景时长
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT ROUND(AVG(场景时长), 0) AS 平均场景时长 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: ts08
+    label: 联合用药动作率
+    description: 统计店员实际联合推荐比例（区别于AI判断的联合用药率）
+    question: 联合用药动作率
+    question_pattern: "^(联合用药动作|实际联合|联合推荐)\\s*(率|统计|分析)?$"
+    intent_key:
+      pattern: single_stat
+      agg: 联合用药率
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT CASE WHEN 联合用药动作='1' THEN 场景ID END) AS 联合推荐场景数, COUNT(DISTINCT 场景ID) AS 总场景数, ROUND(COUNT(DISTINCT CASE WHEN 联合用药动作='1' THEN 场景ID END) * 100.0 / NULLIF(COUNT(DISTINCT 场景ID), 0), 1) AS 联合推荐率 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: ts09
+    label: 商用场景率
+    description: 统计数据达到商用标准的比例
+    question: 商用场景率
+    question_pattern: "^(商用|数据质量|优质数据)\\s*(率|统计|分析|占比)?$"
+    intent_key:
+      pattern: single_stat
+      agg: 场景占比
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT COUNT(DISTINCT CASE WHEN 是否商用='1' THEN 场景ID END) AS 商用场景数, COUNT(DISTINCT 场景ID) AS 总场景数, ROUND(COUNT(DISTINCT CASE WHEN 是否商用='1' THEN 场景ID END) * 100.0 / NULLIF(COUNT(DISTINCT 场景ID), 0), 1) AS 商用率 FROM data {conditions}"
+    chart_type: table_only
+
+  - id: ts10
+    label: 年龄分层分布
+    description: 按用药人年龄分层统计场景数分布
+    question: 年龄分层分布
+    question_pattern: "^(年龄|年龄段|年龄分层|用药年龄)\\s*(分布|统计|排名|TOP\\d+)?$"
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: 用药人年龄分层
+    sql_template: "SELECT 用药人年龄分层, COUNT(DISTINCT 场景ID) AS 场景数, ROUND(COUNT(DISTINCT 场景ID) * 100.0 / (SELECT COUNT(DISTINCT 场景ID) FROM data), 1) AS 占比 FROM data {conditions} GROUP BY 用药人年龄分层 ORDER BY 场景数 DESC"
+    chart_type: bar
+
+  # ===== distribution / top_n 分布 =====
+
+  - id: t2
+    label: 疾病TOP10
+    description: 按疾病名称统计场景数TOP10
+    question: 疾病TOP10
+    question_pattern: "^(疾病|疾病名称|病种)\\s*(TOP\\d+|排名|分布)$"
+    intent_key:
+      pattern: top_n
+      agg: 场景数
+      condition_types: []
+      dimension: 疾病名称
+    sql_template: "SELECT 疾病名称, COUNT(DISTINCT 场景ID) AS 场景数, ROUND(COUNT(DISTINCT 场景ID) * 100.0 / (SELECT COUNT(DISTINCT 场景ID) FROM data), 1) AS 占比 FROM data GROUP BY 疾病名称 ORDER BY 场景数 DESC LIMIT {limit}"
+    chart_type: bar
+    default_params:
+      limit: 10
+
+  - id: t3
+    label: 城市分布
+    description: 按城市统计场景数TOP20
+    question: 城市分布
+    question_pattern: "^(城市|城市分布|地市)\\s*(TOP\\d+|排名|分布)$"
+    intent_key:
+      pattern: top_n
+      agg: 场景数
+      condition_types: []
+      dimension: 城市
+    sql_template: "SELECT 城市, COUNT(DISTINCT 场景ID) AS 场景数 FROM data GROUP BY 城市 ORDER BY 场景数 DESC LIMIT {limit}"
+    chart_type: bar
+    default_params:
+      limit: 20
+
+  - id: t7
+    label: 省份分布
+    description: 按省份统计场景数
+    question: 省份分布
+    question_pattern: "^(省份|省|省级)\\s*(分布|排名|TOP\\d+)?$"
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: 省份
+    sql_template: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data GROUP BY 省份 ORDER BY 场景数 DESC LIMIT {limit}"
+    chart_type: bar
+    default_params:
+      limit: 31
+
+  - id: t8
+    label: 场景时长分布
+    description: 场景时长的分钟档分布
+    question: 场景时长分布
+    question_pattern: "^(场景时长|时长|时长分布)\\s*(分布|统计)?$"
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: 场景时长档
+    sql_template: "SELECT CASE WHEN 场景时长 < 60 THEN '1分钟以内' WHEN 场景时长 < 120 THEN '1-2分钟' WHEN 场景时长 < 180 THEN '2-3分钟' WHEN 场景时长 < 300 THEN '3-5分钟' WHEN 场景时长 < 600 THEN '5-10分钟' ELSE '10分钟以上' END AS 时长档位, COUNT(DISTINCT 场景ID) AS 场景数 FROM data GROUP BY 时长档位 ORDER BY 时长档位"
+    chart_type: bar
+
+  - id: t4
+    label: 月度趋势
+    description: 按月统计场景数趋势
+    question: 月度趋势
+    question_pattern: "^(月度|月份|月)\\s*(趋势|分布|统计)$"
+    intent_key:
+      pattern: trend
+      agg: 场景数
+      condition_types: []
+      dimension: 月度
+    sql_template: "SELECT strftime(ydate, '%Y-%m') AS 月份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data GROUP BY 月份 ORDER BY 月份"
+    chart_type: line
+
+  # ===== 通用分布（渲染器填充维度） =====
+
+  - id: tx01
+    label: 疾病分布
+    description: 各疾病名称分布排名
+    question: 各疾病分布
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: 疾病名称
+    sql_template: "SELECT {dimension}, COUNT(DISTINCT 场景ID) AS 场景数 FROM data {conditions} GROUP BY {dimension} ORDER BY 场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  - id: tx02
+    label: 药品分布
+    description: 各药品名称分布排名
+    question: 各药品分布
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: 场景提及药品
+    sql_template: "SELECT {dimension}, COUNT(DISTINCT 场景ID) AS 场景数 FROM data {conditions} GROUP BY {dimension} ORDER BY 场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  - id: tx03
+    label: 疾病成交分布
+    description: 某疾病成交场景按维度分布
+    question: 疾病成交按城市分布
+    intent_key:
+      pattern: distribution
+      agg: 成交场景数
+      condition_types: [disease]
+      dimension: "*"
+    sql_template: "SELECT {dimension}, COUNT(DISTINCT 场景ID) AS 成交场景数 FROM data WHERE 交易是否达成='是' {conditions_extra} GROUP BY {dimension} ORDER BY 成交场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  - id: tx04
+    label: 药品成交分布
+    description: 各药品成交场景数排名
+    question: 药品成交分布
+    intent_key:
+      pattern: distribution
+      agg: 成交场景数
+      condition_types: []
+      dimension: 场景提及药品
+    sql_template: "SELECT {dimension}, COUNT(DISTINCT 场景ID) AS 成交场景数 FROM data WHERE 交易是否达成='是' {conditions_extra} GROUP BY {dimension} ORDER BY 成交场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  - id: tx05
+    label: 疾病成交率分布
+    description: 某疾病成交率按维度分布
+    question: 疾病成交率按省份
+    intent_key:
+      pattern: distribution
+      agg: 成交率
+      condition_types: [disease]
+      dimension: "*"
+    sql_template: "SELECT {dimension}, ROUND(COUNT(DISTINCT CASE WHEN 交易是否达成='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 成交率 FROM data {conditions} GROUP BY {dimension} ORDER BY 成交率 DESC LIMIT {limit}"
+    chart_type: bar
+
+  # ===== 趋势 =====
+
+  - id: tt01
+    label: 疾病月度趋势
+    description: 某疾病月度场景数趋势
+    question: 疾病月度趋势
+    intent_key:
+      pattern: trend
+      agg: 场景数
+      condition_types: [disease]
+      dimension: 月度
+    sql_template: "SELECT strftime(ydate, '%Y-%m') AS 月份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data {conditions} GROUP BY 月份 ORDER BY 月份"
+    chart_type: line
+
+  - id: tt02
+    label: 疾病成交月度趋势
+    description: 某疾病月度成交场景数趋势
+    question: 疾病成交月度趋势
+    intent_key:
+      pattern: trend
+      agg: 成交场景数
+      condition_types: [disease]
+      dimension: 月度
+    sql_template: "SELECT strftime(ydate, '%Y-%m') AS 月份, COUNT(DISTINCT 场景ID) AS 成交场景数 FROM data WHERE 交易是否达成='是' {conditions_extra} GROUP BY 月份 ORDER BY 月份"
+    chart_type: line
+
+  # ===== 药品分布 =====
+
+  - id: tx06
+    label: 药品-城市分布
+    description: 某药品按城市分布
+    question: 药品城市分布
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: [drug_any]
+      dimension: 城市
+    sql_template: "SELECT 城市, COUNT(DISTINCT 场景ID) AS 场景数 FROM data {conditions} GROUP BY 城市 ORDER BY 场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  - id: tx07
+    label: 药品-省份分布
+    description: 某药品按省份分布
+    question: 药品省份分布
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: [drug_any]
+      dimension: 省份
+    sql_template: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data {conditions} GROUP BY 省份 ORDER BY 场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  # ===== 药品+成交分布 =====
+
+  - id: tx08
+    label: 药品成交-城市分布
+    description: 某药品成交按城市分布
+    question: 药品成交城市分布
+    intent_key:
+      pattern: distribution
+      agg: 成交场景数
+      condition_types: [drug_any]
+      dimension: 城市
+    sql_template: "SELECT 城市, COUNT(DISTINCT 场景ID) AS 成交场景数 FROM data WHERE 交易是否达成='是' {conditions_extra} GROUP BY 城市 ORDER BY 成交场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  - id: tx09
+    label: 药品成交-省份分布
+    description: 某药品成交按省份分布
+    question: 药品成交省份分布
+    intent_key:
+      pattern: distribution
+      agg: 成交场景数
+      condition_types: [drug_any]
+      dimension: 省份
+    sql_template: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 成交场景数 FROM data WHERE 交易是否达成='是' {conditions_extra} GROUP BY 省份 ORDER BY 成交场景数 DESC LIMIT {limit}"
+    chart_type: bar
+
+  # ===== 明细 =====
+
+  - id: dl01
+    label: 场景明细
+    description: 查询场景明细数据
+    question: 场景明细
+    question_pattern: "^(.+)?(明细|详情|逐条|罗列)(.+)?$"
+    intent_key:
+      pattern: detail
+      agg: 明细
+      condition_types: []
+      dimension: null
+    sql_template: "SELECT * FROM data {conditions} LIMIT {limit}"
+    chart_type: table_only
+
+  # ===== Phase 2.1: ATC 维度分布 =====
+
+  - id: atc01
+    label: ATC化学亚组分布
+    description: 按ATC化学亚组（4级）统计场景数分布
+    question: 按化学品类分布
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: ATC化学亚组
+    sql_template: "ATC_QUERY"
+    chart_type: bar
+
+  - id: atc02
+    label: ATC解剖大类分布
+    description: 按ATC解剖大类（1级）统计场景数分布
+    question: 按ATC大类分布
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: ATC解剖大类
+    sql_template: "ATC_QUERY"
+    chart_type: bar
+
+  - id: atc03
+    label: ATC药理亚组分布
+    description: 按ATC药理亚组（3级）统计场景数分布
+    question: 按药理分类分布
+    intent_key:
+      pattern: distribution
+      agg: 场景数
+      condition_types: []
+      dimension: ATC药理亚组
+    sql_template: "ATC_QUERY"
+    chart_type: bar

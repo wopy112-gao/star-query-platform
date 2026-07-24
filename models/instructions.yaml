@@ -1,0 +1,122 @@
+# 星宝语料场景查询系统 — Instructions 业务规则库
+# 用于优化 LLM SQL 生成质量，按意图标签动态选取注入
+# 版本：1.0
+
+instructions:
+  # ============================================================
+  # prompt_injection：注入 LLM Prompt，提升首次 SQL 准确率
+  # ============================================================
+
+  - id: ins_disease_like
+    label: 疾病名称层级匹配
+    description: "疾病名称是层级分类格式，必须用 LIKE 模糊匹配而非 IN 精确匹配"
+    applies_to: [disease_query, all]
+    priority: high
+    rule_type: prompt_injection
+    text: "疾病名称字段是层级分类格式（如「呼吸系统疾病-感冒」），筛选时必须用 LIKE 模糊匹配，例如：疾病名称 LIKE '%感冒%'。禁止使用 IN 精确匹配（如疾病名称 IN ('感冒')），这种写法查不到数据。"
+
+  - id: ins_deal_rate_comparison
+    label: 成交口径区分
+    description: "场景级成交 vs 商品级成交的 SQL 差异"
+    applies_to: [deal_analysis, drug_query]
+    priority: high
+    rule_type: prompt_injection
+    text: "成交分析分两种口径：（1）场景级成交：交易是否达成='是' — 不限定药品，查该场景整体是否成交；（2）商品级成交：交易是否达成='是' AND 订单药品 LIKE '%药品名%' — 限定具体药品的成交情况。做成交率时分子场景数必须是分母场景数的子集，确保 ≤100%。"
+
+  - id: ins_drug_multi_field
+    label: 药品三字段匹配
+    description: "查询药品时必须同时匹配三个 JSON 字符串字段"
+    applies_to: [drug_query, drug_distribution]
+    priority: high
+    rule_type: prompt_injection
+    text: "药品相关查询必须同时检查三个字段：顾客点名药品、场景提及药品、订单药品，用 LIKE 或 CONTAINS 做模糊匹配。示例：WHERE (顾客点名药品 LIKE '%美林%' OR 场景提及药品 LIKE '%美林%' OR 订单药品 LIKE '%美林%')"
+
+  - id: ins_scene_count_dedup
+    label: 场景ID去重
+    description: "统计场景数必须去重"
+    applies_to: [all]
+    priority: high
+    rule_type: prompt_injection
+    text: "场景数是核心指标，必须用 COUNT(DISTINCT 场景ID) 计算，禁止用 COUNT(*) 替代。"
+
+  - id: ins_ydate_filter
+    label: 时间过滤用 ydate
+    description: "时间过滤统一用 ydate 字段"
+    applies_to: [time_range, time_trend]
+    priority: medium
+    rule_type: prompt_injection
+    text: "时间筛选统一用 ydate 字段（格式 YYYY-MM-DD）。示例：WHERE ydate >= '2025-01-01' AND ydate < '2025-07-01'。条件表达式中的日期值必须用单引号括起来。"
+
+  - id: ins_combo_action_new
+    label: 联合用药分析用新字段
+    description: "店员实际联合推荐行为分析优先用联合用药动作字段"
+    applies_to: [combo_analysis]
+    priority: medium
+    rule_type: prompt_injection
+    text: "联合用药分析时注意区分两个字段：'联合用药动作'='1' 代表店员实际的联合推荐行为（更准确），'是否联合用药'='是' 是 AI 判断结论（可能不准确）。做实际联合推荐率分析时优先用前者。"
+
+  - id: ins_commercial_filter
+    label: 商用数据过滤
+    description: "高质量数据分析可用是否商用字段过滤"
+    applies_to: [quality_analysis]
+    priority: medium
+    rule_type: prompt_injection
+    text: "做高质量数据分析时可用 '是否商用'='1' 过滤达到商用标准的数据，或用 '综合置信度评分' >= 0.8 来过滤高置信度数据。"
+
+  - id: ins_egg_task
+    label: 彩蛋任务分析
+    description: "彩蛋任务字段的查询口径"
+    applies_to: [egg_task_analysis]
+    priority: low
+    rule_type: prompt_injection
+    text: "彩蛋任务分析：'彩蛋任务ID'>0 表示该场景命中彩蛋分母（符合彩蛋疾病条件），'是否分子1=是(发分)'=1 才是真正命中分子（店员提及并传递了关键信息）。彩蛋命中率 = COUNT(彩蛋任务ID>0 AND 是否分子1=是(发分)=1) / COUNT(彩蛋任务ID>0)。"
+
+  # ============================================================
+  # sql_rewrite：后处理层自动改写 SQL 的规则
+  # ============================================================
+
+  - id: fix_disease_in_to_like
+    label: 疾病IN→LIKE改写
+    description: "将WHERE疾病名称 IN (...) 自动改写为 LIKE 模糊匹配"
+    applies_to: [all]
+    priority: high
+    rule_type: sql_rewrite
+    text: "WHERE 疾病名称 IN ('val1', 'val2', ...) → WHERE (疾病名称 LIKE '%val1%' OR 疾病名称 LIKE '%val2%')"
+    rewrite_fn: "_fix_disease_in_to_like"  # 对应 llm_translator.py 中的函数
+
+  - id: fix_contradictory_where
+    label: 自相矛盾WHERE修复
+    description: "移除 LIKE '%X%' AND NOT LIKE '%X%' 的矛盾条件"
+    applies_to: [all]
+    priority: high
+    rule_type: sql_rewrite
+    text: "自动检测并移除 WHERE 条件中同时包含 LIKE '%美林%' 和 NOT LIKE '%美林%' 的自相矛盾条件"
+    rewrite_fn: "_fix_contradictory_where"  # 对应 llm_translator.py 中的函数
+
+  # ============================================================
+  # validation：质量门禁校验规则
+  # ============================================================
+
+  - id: val_rate_le_100
+    label: 比率≤100%校验
+    description: "所有比率指标的分子必须是分母的子集"
+    applies_to: [rate_calculation]
+    priority: high
+    rule_type: validation
+    text: "成交率、问症率、联合用药率等比率指标中，分子场景数必须是分母场景数的子集。如果分子使用了额外的 WHERE 条件过滤（如交易是否达成='是'），分母也必须使用相同的过滤条件，确保分子≤分母。"
+
+  - id: val_time_consistency
+    label: 时间一致性校验
+    description: "问题提到时间范围但 SQL 缺时间条件时告警"
+    applies_to: [all]
+    priority: medium
+    rule_type: validation
+    text: "用户问题提到「上个月」「最近7天」「本月」「今年」等时间范围时，SQL 中必须有 ydate 时间过滤条件，否则需要告警。"
+
+  - id: val_dimension_match
+    label: 维度一致性
+    description: "问题要求的维度与 SQL GROUP BY 匹配"
+    applies_to: [distribution_query]
+    priority: medium
+    rule_type: validation
+    text: "用户问题中提到的维度（按省份、按城市、按月等）必须与 SQL 的 GROUP BY 列一致，不一致时需要告警。"

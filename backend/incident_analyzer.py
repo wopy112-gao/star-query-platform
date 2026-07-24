@@ -74,6 +74,166 @@ def mark_analyzed(incident_id: str) -> bool:
 
 
 # ============================================================
+# SQLite 事件读取（v1.1 新增：以 SQLite 为主线）
+# ============================================================
+
+_DEFAULT_DB = str(
+    Path(__file__).resolve().parent.parent / "star-query-history.db"
+)
+
+
+def scan_pending_from_sqlite(db_path: str = None) -> list[dict]:
+    """从 SQLite incidents 表扫描 status='pending' 的事件
+
+    字段名归一化：SQLite 存的是 id → 转换为 incident_id
+    JSON 字段：warnings / intent_info 自动解析
+    """
+    if db_path is None:
+        db_path = _DEFAULT_DB
+
+    import sqlite3
+    import json as _json
+
+    pending = []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM incidents WHERE status='pending' ORDER BY created_at ASC"
+        ).fetchall()
+        for row in rows:
+            d = dict(row)
+            # 归一化字段名
+            d["incident_id"] = d.pop("id", "")
+            # 解析 JSON 字段（兼容 NULL / 空字符串 / 合法 JSON）
+            for field in ("warnings", "intent_info"):
+                raw = d.get(field)
+                if raw is None or raw == "":
+                    d[field] = [] if field == "warnings" else {}
+                else:
+                    try:
+                        d[field] = _json.loads(raw)
+                    except (_json.JSONDecodeError, TypeError):
+                        d[field] = [] if field == "warnings" else {}
+            pending.append(d)
+        conn.close()
+        print(f"[Analyzer/SQLite] 扫描到 {len(pending)} 条 pending 事件")
+    except Exception as e:
+        print(f"[Analyzer/SQLite] 读取失败: {e}")
+
+    return pending
+
+
+def mark_analyzed_sqlite(
+    incident_id: str,
+    root_cause: str = "",
+    fix_proposal: str = "",
+) -> bool:
+    """标记 SQLite 事件为已分析（status='analyzed' + 写入分析结果）"""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(_DEFAULT_DB)
+        conn.execute(
+            """UPDATE incidents
+               SET status='analyzed',
+                   root_cause=?,
+                   fix_proposal=?
+               WHERE id=?
+                  AND status='pending'""",
+            (root_cause, fix_proposal, incident_id),
+        )
+        affected = conn.total_changes
+        conn.commit()
+        conn.close()
+        return affected > 0
+    except Exception as e:
+        print(f"[Analyzer/SQLite] 标记失败: {e}")
+        return False
+
+
+# ============================================================
+# 安全锁（v1.1 P1：生产环境禁止直接修改代码）
+# ============================================================
+
+_IS_TEST_ENV = "test" in str(Path(__file__).resolve())
+
+
+def _guard_safe_mode():
+    """生产环境安全锁：禁止直接修改代码文件
+    
+    所有代码修改必须经 fix_applier 执行（备份 → 应用 → 回归 → 确认/回滚）。
+    测试环境不做硬限制（允许手动调试），但打印警告。
+    """
+    if not _IS_TEST_ENV:
+        raise RuntimeError(
+            "\n"
+            "╔═══════════════════════════════════════════════════════════════╗\n"
+            "║  安全锁触发：生产环境禁止直接修改代码文件                      ║\n"
+            "║  请通过 fix_applier 执行（备份 → 应用 → 回归 → 确认/回滚）    ║\n"
+            "║  或使用 scripts/scan_incidents.py 自动化链路                 ║\n"
+            "╚═══════════════════════════════════════════════════════════════╝"
+        )
+    else:
+        print("[安全锁] ⚠️ 测试环境：直接修改代码仅限调试，正式链路应走 fix_applier")
+
+
+# ============================================================
+# 断路器（P4：防自愈系统雪崩）
+# ============================================================
+
+def _circuit_breaker_tripped(inc_type: str, question: str) -> bool:
+    """断路器：同类型同问题连续3次修复失败 → 跳闸
+    
+    检查 incidents 表中最近3条同 type+question 的记录，
+    如果全部是 failed/rolled_back，说明当前修复方案不可靠，
+    跳过自动修复，通知人工处理。
+    """
+    try:
+        import sqlite3
+        conn = sqlite3.connect(_DEFAULT_DB)
+        rows = conn.execute(
+            """SELECT status FROM incidents
+               WHERE type=? AND question=?
+               ORDER BY created_at DESC LIMIT 3""",
+            (inc_type, question),
+        ).fetchall()
+        conn.close()
+        if len(rows) < 3:
+            return False
+        return all(r[0] in ("failed", "rolled_back") for r in rows)
+    except Exception:
+        return False
+
+
+# ============================================================
+# 循环检测（P4：防同问题反复修复）
+# ============================================================
+
+def _check_recurring(question: str) -> bool:
+    """循环检测：7天内同问题已出现≥2次 resolved
+    
+    说明之前修过但又出现了，说明修得不彻底。
+    返回 True 时建议置信度降级，走人工审核。
+    """
+    if not question:
+        return False
+    try:
+        import sqlite3
+        conn = sqlite3.connect(_DEFAULT_DB)
+        row = conn.execute(
+            """SELECT COUNT(*) FROM incidents
+               WHERE question=? AND status='resolved'
+               AND created_at > datetime('now', '-7 days')""",
+            (question,),
+        ).fetchone()
+        conn.close()
+        return row[0] >= 2 if row else False
+    except Exception:
+        return False
+
+
+# ============================================================
 # 根因分析
 # ============================================================
 
@@ -540,6 +700,36 @@ def generate_proposal(incidents: list[dict]) -> dict:
         "status": "pending_review",
     }
 
+    # 断路器：检查同类型同问题是否连续3次修复失败
+    for inc in incidents:
+        if _circuit_breaker_tripped(inc.get("type", ""), inc.get("question", "")):
+            proposal["exception"] = True
+            proposal["confidence"] = "low"
+            proposal["fix_proposal"] = (
+                "⚠️ 断路器触发：同类型问题连续3次修复失败，"
+                "跳过自动修复，需人工审核"
+            )
+            print(f"  [断路器] ⚠️ 触发: {inc.get('question', '?')[:60]} — 跳过自动修复")
+            break
+
+    # 循环检测：7天内同问题是否已解决≥2次
+    if not proposal.get("exception"):  # 断路器触发时不再重复检测
+        for inc in incidents:
+            question = inc.get("question", "")
+            if _check_recurring(question):
+                # 降一级置信度
+                conf_map = {"high": "medium", "medium": "low", "low": "low"}
+                orig_conf = proposal.get("confidence", "low")
+                new_conf = conf_map.get(orig_conf, "low")
+                proposal["confidence"] = new_conf
+                proposal["recurring"] = True
+                proposal["fix_proposal"] = (
+                    f"🔄 循环检测：问题「{question[:40]}」7天内已解决≥2次但再次出现，"
+                    "可能修得不彻底。置信度已降级，建议人工审核根因。"
+                )
+                print(f"  [循环检测] 🔄 检出: {question[:60]} — 置信度降级 {orig_conf}→{new_conf}")
+                break
+
     return proposal
 
 
@@ -560,6 +750,7 @@ def save_proposal(proposal: dict) -> str:
 
 def _apply_few_shot(change: dict) -> str:
     """添加 few-shot 示例到 llm_translator.py"""
+    _guard_safe_mode()
     try:
         content = change.get("content", {})
         question = content.get("question", "")
@@ -614,6 +805,7 @@ def _apply_few_shot(change: dict) -> str:
 
 def _apply_condition_type(change: dict) -> str:
     """添加条件类型到 intent_schemas.py"""
+    _guard_safe_mode()
     try:
         type_name = change.get("type_name", "")
         if not type_name:
@@ -646,6 +838,7 @@ def _apply_condition_type(change: dict) -> str:
 
 def _apply_renderer_map(change: dict) -> str:
     """添加渲染映射到 sql_renderer.py"""
+    _guard_safe_mode()
     try:
         type_name = change.get("type_name", "")
         if not type_name:
@@ -679,6 +872,7 @@ def _apply_renderer_map(change: dict) -> str:
 
 def apply_proposal(proposal: dict) -> list[str]:
     """自动执行修复方案中的 proposed_changes"""
+    _guard_safe_mode()
     results = []
     changes = proposal.get("proposed_changes", [])
 
@@ -699,6 +893,30 @@ def apply_proposal(proposal: dict) -> list[str]:
             results.append(f"  [{i+1}] ⚠️ 未知动作: {action}")
 
     return results
+
+
+def _sync_analysis_to_sqlite(proposal: dict, group: list[dict]) -> None:
+    """将分析结果同步写入 SQLite"""
+    try:
+        import sqlite3, json as _json
+        DB = '/root/.lightclaw/workspace/star-query-test/star-query-history.db'
+        conn = sqlite3.connect(DB)
+        rc = proposal.get("root_cause", "")
+        fp = proposal.get("fix_proposal", "")
+        for inc in group:
+            iid = inc.get("incident_id", "")
+            if not iid: continue
+            existing = conn.execute("SELECT id FROM incidents WHERE id=?", (iid,)).fetchone()
+            if existing:
+                conn.execute("UPDATE incidents SET root_cause=?, fix_proposal=?, status='analyzed' WHERE id=?", (rc, fp, iid))
+            else:
+                conn.execute("INSERT INTO incidents (id,type,env,status,question,root_cause,fix_proposal,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (iid, inc.get("type",""), inc.get("env",""), 'analyzed', inc.get("question",""), rc, fp, inc.get("created_at","")))
+            conn.commit()
+        conn.close()
+        print(f"  [SQLiteSync] 已同步 {len(group)} 条")
+    except Exception as e:
+        print(f"  [SQLiteSync] 写入失败: {e}")
 
 
 def scan_and_analyze() -> list[dict]:
@@ -725,12 +943,10 @@ def scan_and_analyze() -> list[dict]:
             # 将分析结果同步写入 SQLite（管理后台可见 readable 的分析）
             _sync_analysis_to_sqlite(proposal, group)
 
-            # 自动执行修复方案（测试环境）
-            if proposal.get("proposed_changes"):
-                fix_results = apply_proposal(proposal)
-                print("  [AutoFix] 修复执行结果:")
-                for r in fix_results:
-                    print(f"    {r}")
+            # [v1.1] 不再直接调 apply_proposal() 改代码
+            #   → 改为由 fix_applier 统一执行（备份→应用→回归→回滚/确认）
+            #   → 见 scripts/scan_incidents.py 作为 cron 入口
+            print("  [Analyzer] 方案已输出，等待 fix_applier 执行")
 
     return proposals
 

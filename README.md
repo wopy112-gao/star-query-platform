@@ -2,7 +2,7 @@
 
 自然语言 → SQL 的医药零售数据查询系统。
 技术栈：FastAPI + React + DuckDB + DeepSeek API。
-数据量：**2,153,796 行**。数据来源：阿里云 ClickHouse（每天 6:00 增量同步 + ATC 映射 enrich）。
+数据量：**3,145,870 行**（截至 2026-07-24）。数据来源：阿里云 ClickHouse（每天 6:00 增量同步 + ATC 映射 enrich）。
 
 ## 核心架构：7 层防御 Pipeline + 去重计数扩展
 

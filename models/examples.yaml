@@ -1,0 +1,58 @@
+# 星宝语料场景查询系统 — LLM 翻译参考示例库
+# 按分类标签组织，供动态 Few-shot 选择
+# 版本：1.0
+
+categories:
+  通用统计:
+    - question: "总场景数"
+      sql: "SELECT COUNT(DISTINCT 场景ID) AS 总场景数 FROM data"
+    - question: "联合用药率"
+      sql: "SELECT ROUND(COUNT(DISTINCT CASE WHEN 是否联合用药='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 联合用药率 FROM data"
+    - question: "问症率"
+      sql: "SELECT ROUND(COUNT(DISTINCT CASE WHEN 是否问症='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 问症率 FROM data"
+
+  疾病查询:
+    - question: "感冒场景数"
+      sql: "SELECT COUNT(DISTINCT 场景ID) AS 场景数 FROM data WHERE 疾病名称 LIKE '%感冒%'"
+    - question: "疾病TOP10分布"
+      sql: "SELECT 疾病名称, COUNT(DISTINCT 场景ID) AS 场景数, ROUND(COUNT(DISTINCT 场景ID) * 100.0 / (SELECT COUNT(DISTINCT 场景ID) FROM data), 1) AS 占比 FROM data GROUP BY 疾病名称 ORDER BY 场景数 DESC LIMIT 10"
+
+  药品查询:
+    - question: "美林在哪些城市出现最多"
+      sql: "SELECT 城市, COUNT(DISTINCT 场景ID) AS 场景数 FROM data WHERE (顾客点名药品 LIKE '%美林%' OR 场景提及药品 LIKE '%美林%' OR 订单药品 LIKE '%美林%') GROUP BY 城市 ORDER BY 场景数 DESC LIMIT 10"
+    - question: "诺欣妥场景明细"
+      sql: "SELECT * FROM data WHERE (顾客点名药品 LIKE '%诺欣妥%' OR 场景提及药品 LIKE '%诺欣妥%' OR 订单药品 LIKE '%诺欣妥%') LIMIT 50"
+
+  成交相关:
+    - question: "成交率"
+      sql: "SELECT ROUND(COUNT(DISTINCT CASE WHEN 交易是否达成='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 成交率 FROM data"
+    - question: "感冒成交率"
+      sql: "SELECT ROUND(COUNT(DISTINCT CASE WHEN 交易是否达成='是' THEN 场景ID END) * 100.0 / COUNT(DISTINCT 场景ID), 1) AS 成交率 FROM data WHERE 疾病名称 LIKE '%感冒%'"
+    - question: "美林成交场景数省份分布"
+      sql: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 成交场景数 FROM data WHERE 交易是否达成='是' AND (订单药品 LIKE '%美林%') GROUP BY 省份 ORDER BY 成交场景数 DESC"
+
+  地域分布:
+    - question: "各省份场景数排名"
+      sql: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data GROUP BY 省份 ORDER BY 场景数 DESC"
+    - question: "高血压各省场景数"
+      sql: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data WHERE 疾病名称 LIKE '%高血压%' GROUP BY 省份 ORDER BY 场景数 DESC"
+
+  时间趋势:
+    - question: "月度趋势"
+      sql: "SELECT strftime(ydate, '%Y-%m') AS 月份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data GROUP BY 月份 ORDER BY 月份"
+    - question: "感冒月度场景数趋势"
+      sql: "SELECT strftime(ydate, '%Y-%m') AS 月份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data WHERE 疾病名称 LIKE '%感冒%' GROUP BY 月份 ORDER BY 月份"
+
+  时间范围:
+    - question: "最近7天总场景数"
+      sql: "SELECT COUNT(DISTINCT 场景ID) AS 总场景数 FROM data WHERE ydate >= CURRENT_DATE - INTERVAL '7' DAY"
+    - question: "本月各省场景数"
+      sql: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data WHERE strftime(ydate, '%Y-%m') = strftime(CURRENT_DATE, '%Y-%m') GROUP BY 省份 ORDER BY 场景数 DESC"
+    - question: "2026年各省场景数"
+      sql: "SELECT 省份, COUNT(DISTINCT 场景ID) AS 场景数 FROM data WHERE strftime(ydate, '%Y') = '2026' GROUP BY 省份 ORDER BY 场景数 DESC"
+
+  实体计数:
+    - question: "覆盖多少个省份"
+      sql: "SELECT COUNT(DISTINCT 省份) AS 省份数 FROM data"
+    - question: "山东省有多少门店"
+      sql: "SELECT COUNT(DISTINCT 门店ID) AS 门店数 FROM data WHERE 省份='山东省'"

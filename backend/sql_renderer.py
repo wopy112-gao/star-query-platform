@@ -128,6 +128,27 @@ DIMENSION_SQL_TEMPLATES: dict[str, str] = {
 # JSON 数组维度（药品字段需要 UNNEST 展开）
 DRUG_DIMENSIONS = {"场景提及药品", "订单药品", "顾客点名药品", "店员提及药品JSON", "店员推荐药品JSON"}
 
+# ===== Phase 2.1: ATC 维度（多表 JOIN） =====
+
+ATC_DIMENSIONS = {"ATC化学亚组", "ATC药理亚组", "ATC治疗亚组", "ATC解剖大类", "ATC编码"}
+
+# ATC 维度 → drug_atc_index 列名映射
+ATC_DIMENSION_COL_MAP: dict[str, str] = {
+    "ATC化学亚组": "dai.ATC化学亚组",
+    "ATC药理亚组": "dai.ATC药理亚组",
+    "ATC治疗亚组": "dai.ATC治疗亚组",
+    "ATC解剖大类": "dai.ATC解剖大类",
+    "ATC编码": "dai.ATC编码",
+}
+
+# data 表独有的字段类型（需 JOIN data 才能过滤）
+_DATA_ONLY_CONDITION_TYPES = {
+    "disease", "geo", "time_range", "deal_yes", "deal_no",
+    "gender", "age", "trust", "combination", "combo_action",
+    "active_recommend", "active_participate", "store_type",
+    "age_layer", "commercial", "confidence",
+}
+
 # 药品维度 → (SELECT列名, UNNEST JOIN子句, 字段别名)
 # ⚠️ UNNEST 的别名必须与 _render_dimension() 返回的 t.drug 一致
 DRUG_UNNEST_MAP: dict[str, tuple[str, str, str]] = {
@@ -168,15 +189,20 @@ class SQLRenderer:
         渲染最终 SQL。
 
         流程：
-        1. 加载模板的 SQL 骨架
-        2. 生成 WHERE 子句（根据 intent.conditions）
-        3. 替换 {dimension} 为意图维度
-        4. 替换 {conditions} / {conditions_extra} 为条件子句
-        5. 替换 {limit} 为意图行数限制
-        6. 如果是药品维度（JSON 数组），执行 UNNEST 展开
-        7. 清理多余的 WHERE / AND
+        1. ATC 维度检测（Phase 2.1）：模板标记为 ATC_QUERY 时走专用路径
+        2. 加载模板的 SQL 骨架
+        3. 生成 WHERE 子句（根据 intent.conditions）
+        4. 替换 {dimension} 为意图维度
+        5. 替换 {conditions} / {conditions_extra} 为条件子句
+        6. 替换 {limit} 为意图行数限制
+        7. 如果是药品维度（JSON 数组），执行 UNNEST 展开
+        8. 清理多余的 WHERE / AND
         """
         sql = template_obj["sql_template"]
+
+        # ---- Phase 2.1: ATC 模板 → 走专用路径 ----
+        if sql == "ATC_QUERY":
+            return self.render_atc_query(intent)
 
         # Step 1: 渲染 {conditions} → 完整 WHERE 子句（含 WHERE 前缀）
         conditions_sql = self._render_conditions(intent.conditions, intent)
@@ -504,6 +530,69 @@ class SQLRenderer:
         sql = re.sub(r"\s{2,}", " ", sql).strip()
 
         return sql
+
+
+    def render_atc_query(self, intent: QueryIntent) -> str:
+        """为 ATC 维度查询构建基于 drug_atc_index 的 SQL（Phase 2.1）
+
+        不走模板渲染，直接构建 FROM drug_atc_index 的查询。
+        支持带条件的 ATC 分布查询（如"感冒的化学品类分布"→ JOIN data）。
+
+        Args:
+            intent: 结构化查询意图（dimension 必须是 ATC 维度）
+
+        Returns:
+            SQL 语句
+        """
+        dim = intent.dimension
+        atc_col = ATC_DIMENSION_COL_MAP.get(dim)
+        if not atc_col:
+            print(f"[ATCRender] 未知 ATC 维度: {dim}，回退 LLM fallback")
+            return "__LLM_FALLBACK__"
+
+        limit = intent.limit if intent.limit else 50
+
+        # 检查 intent 是否有 data 表独有的条件类型
+        has_data_conditions = any(
+            c.type in _DATA_ONLY_CONDITION_TYPES for c in intent.conditions
+        )
+
+        if has_data_conditions:
+            # ---- 带 data 表条件：需要 JOIN data ----
+            # 构建 data 表上的条件（加 data. 前缀）
+            data_parts = []
+            for cond in intent.conditions:
+                if cond.type in _DATA_ONLY_CONDITION_TYPES:
+                    fragment = self._render_single_condition(cond)
+                    if fragment and fragment != "__LLM_FALLBACK__":
+                        # 给字段名前加 data. 前缀
+                        data_parts.append(fragment)
+
+            data_where = " AND ".join(data_parts) if data_parts else "1=1"
+
+            new_sql = (
+                f"SELECT {atc_col} AS {dim}, "
+                f"COUNT(DISTINCT dai.场景ID) AS 场景数 "
+                f"FROM drug_atc_index dai "
+                f"JOIN data ON dai.场景ID = data.场景ID "
+                f"WHERE ({data_where}) AND {atc_col} IS NOT NULL "
+                f"GROUP BY {atc_col} "
+                f"ORDER BY 场景数 DESC LIMIT {limit}"
+            )
+
+        else:
+            # ---- 无条件（或仅有药品条件）：直接查 drug_atc_index ----
+            new_sql = (
+                f"SELECT {atc_col} AS {dim}, "
+                f"COUNT(DISTINCT dai.场景ID) AS 场景数 "
+                f"FROM drug_atc_index dai "
+                f"WHERE {atc_col} IS NOT NULL "
+                f"GROUP BY {atc_col} "
+                f"ORDER BY 场景数 DESC LIMIT {limit}"
+            )
+
+        print(f"[ATCRender] 构建 ATC 查询: {dim}, conditions={len(intent.conditions)}条")
+        return new_sql
 
 
 # 全局实例
