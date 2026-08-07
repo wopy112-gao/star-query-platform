@@ -466,8 +466,11 @@ class DuckDbEngine:
                 print(f"[增量加载] 已删除 {old_count:,} 行旧数据 (日期: {min_date} ~ {max_date})")
 
             # Step 3: INSERT 增量数据
+            # 按列名匹配（避免 parquet 列顺序与 data 表不一致导致错位）
+            data_cols = [c[0] for c in conn.execute("DESCRIBE data").fetchall()]
+            col_str = ", ".join(f'"{c}"' for c in data_cols)
             conn.execute(
-                "INSERT INTO data SELECT * FROM read_parquet(?)",
+                f"INSERT INTO data ({col_str}) SELECT {col_str} FROM read_parquet(?)",
                 [parquet_path]
             )
             print(f"[增量加载] 已插入 {incr_rows:,} 行增量数据")

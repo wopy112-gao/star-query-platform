@@ -138,6 +138,10 @@ ai_scenario_chek AS (
         scenario_check.completeness_score                                        AS `切割完整度分值`,
         -- ↑↑↑ 新增字段结束 ↑↑↑
         scenario_check.original_scenario_id                                        AS `原始场景ID`,
+        -- ↓↓↓ 2026-08-07 彩蛋直取字段（CH 源表原生字段，减少对彩蛋 xlsx 依赖）↓↓↓
+        scenario_check.egg_id                                                      AS `彩蛋任务ID`,
+        scenario_check.egg_drug_deal                                               AS `是否分子1=是(发分)`,
+        -- ↑↑↑ 彩蛋直取字段结束 ↑↑↑
         arrayDistinct(JSONExtract(scenario_check.exd_disease, 'Array(String)'))     AS exd_disease,
         arrayDistinct(JSONExtract(scenario_check.exd_disease_gate, 'Array(String)')) AS exd_disease_gate
     FROM yaoxin_ai.x_ai_assistant_scenario_check scenario_check
@@ -196,8 +200,11 @@ select_all_disease AS (
         `是否商用`,
         `切割置信度分值`,
         `切割完整度分值`,
-        `原始场景ID`
-        -- ↑↑↑ 新增字段结束 ↑↑↑
+        `原始场景ID`,
+        -- ↓↓↓ 2026-08-07 彩蛋直取字段 ↓↓↓
+        `彩蛋任务ID`,
+        `是否分子1=是(发分)`
+        -- ↑↑↑ 彩蛋直取字段结束 ↑↑↑
     FROM ai_scenario_chek ck
     ARRAY JOIN exd_disease AS exd_disease_name
     WHERE 1

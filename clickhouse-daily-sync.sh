@@ -28,6 +28,15 @@ FULL_FILE="/root/All_data_ch_full.parquet"
 INCR_FILE="$STAR_QUERY_DIR/data/增量_${YESTERDAY}.parquet"
 MERGED_FILE="/root/All_data_ch_full_merged.parquet"
 
+# ---- Step 1.5: 增量 parquet 补齐彩蛋字段（否则 49列 vs data表54列，增量加载必失败） ----
+echo "  📋 增量 parquet 补齐彩蛋字段..." >> "$LOG_FILE"
+if [ -f "$INCR_FILE" ]; then
+    $PYTHON "$STAR_QUERY_DIR/scripts/backfill_egg_incremental.py" "$INCR_FILE" >> "$LOG_FILE" 2>&1
+    echo "  ✅ 增量彩蛋补齐完成" >> "$LOG_FILE"
+else
+    echo "  ⚠️ 增量文件不存在: $INCR_FILE" >> "$LOG_FILE"
+fi
+
 echo "  📋 合并全量 parquet..." >> "$LOG_FILE"
 
 $PYTHON -c "
