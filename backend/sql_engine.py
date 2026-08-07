@@ -85,7 +85,7 @@ def _check_healthy(conn: Optional[duckdb.DuckDBPyConnection], timeout_sec: int =
 class ConnectionPool:
     """DuckDB 连接池（固定大小），轮询分配 + 健康检测 + 自动重建"""
 
-    def __init__(self, size: int = 6):
+    def __init__(self, size: int = 6, read_only: bool = False):
         self._connections: List[Optional[duckdb.DuckDBPyConnection]] = [None] * size
         self._last_ok: List[float] = [0.0] * size  # 最后活跃时间戳，0=需重建
         self._heartbeat_sec: float = 60.0  # 超过此秒数无活动→自动重建
@@ -93,21 +93,26 @@ class ConnectionPool:
         self._next = 0
         self._db_file = ":memory:"
         self._memory_limit = "1GB"
+        self._read_only = read_only  # Step2：只读模式（构建-替换方案前提）
         self._initialized = False
 
     def init(self, db_file: str, memory_limit: str,
              mapping_df: Optional[pd.DataFrame] = None,
-             master_conn: Optional[duckdb.DuckDBPyConnection] = None):
+             master_conn: Optional[duckdb.DuckDBPyConnection] = None,
+             read_only: Optional[bool] = None):
         """
         初始化连接池。
         - 持久化模式：各连接打开同一 .duckdb 文件，data 表共享
         - 内存模式：各连接各自独立，需在外部确保数据加载
+        - read_only: 只读模式（默认跟随构造参数），多连接读安全，禁止写
         """
+        if read_only is not None:
+            self._read_only = read_only
         self._db_file = db_file
         self._memory_limit = memory_limit
 
         for i in range(len(self._connections)):
-            conn = duckdb.connect(db_file)
+            conn = duckdb.connect(db_file, read_only=self._read_only)
             conn.execute(f"SET memory_limit='{memory_limit}'")
             conn.execute("SET threads = 1")
             self._connections[i] = conn
@@ -120,7 +125,8 @@ class ConnectionPool:
 
         self._initialized = True
         print(f"[连接池] 初始化完成: {len(self._connections)} 连接"
-              f" ({'持久化' if db_file != ':memory:' else '内存'}模式)")
+              f" ({'持久化' if db_file != ':memory:' else '内存'}模式"
+              f", {'只读' if self._read_only else '读写'})")
 
     def get(self) -> Optional[duckdb.DuckDBPyConnection]:
         """非阻塞取连接，不健康自动重建；锁冲突时返回 None"""
@@ -163,8 +169,19 @@ class ConnectionPool:
                 break
 
     def _rebuild(self, idx: int):
-        """重建指定位置的连接（不关闭旧连接——旧连接可能在 worker 线程中仍被使用）"""
-        conn = duckdb.connect(self._db_file)
+        """重建指定位置的连接
+
+        v2 (2026-08-07 Step1 止血): 重建前先关闭旧连接，避免 fd + C++ 对象泄漏。
+        旧连接若正被 worker 线程使用，close() 会让该查询失败（返回错误而非崩溃），
+        这是可接受的——总好过 'pure virtual method called' C++ 崩溃。
+        """
+        old_conn = self._connections[idx]
+        if old_conn is not None:
+            try:
+                old_conn.close()
+            except Exception as e:
+                print(f"[连接池] 关闭旧连接 #{idx} 失败: {e}（忽略，继续重建）")
+        conn = duckdb.connect(self._db_file, read_only=self._read_only)
         conn.execute(f"SET memory_limit='{self._memory_limit}'")
         conn.execute("SET threads = 1")
         self._connections[idx] = conn
@@ -199,6 +216,7 @@ class DuckDbEngine:
     _mapping_loaded: bool = False
     _mapping_row_count: int = 0
     _lock = threading.Lock()
+    _write_lock = threading.Lock()  # 增量加载专用写锁（Step1 止血：防止写期间连接重建/并发写文件）
     _health_checker_started: bool = False
     _health_checker_thread: Optional[threading.Thread] = None
 
@@ -231,26 +249,30 @@ class DuckDbEngine:
 
             # ---- 环境判断：持久化 vs 内存模式 ----
             is_persistent = os.getenv("STARQUERY_DB_MODE", "").lower() == "persistent"
+            # Step2：只读模式（构建-替换方案前提）。默认 false 保持兼容；
+            # 待 Step4 daily-sync 改造完成后置 true，服务只读运行杜绝写文件崩溃。
+            read_only = os.getenv("STARQUERY_DB_READONLY", "").lower() == "true"
 
             pool_size = 6 if is_persistent else 1
 
             if is_persistent:
                 db_file = os.getenv("STARQUERY_DB_PATH", "/tmp/star-query.duckdb")
-                self._pool = ConnectionPool(size=pool_size)
+                self._pool = ConnectionPool(size=pool_size, read_only=read_only)
                 # 主连接：加载数据到文件
-                master = duckdb.connect(db_file)
+                master = duckdb.connect(db_file, read_only=read_only)
                 master.execute("SET memory_limit='2GB'")
-                print(f"[DuckDB] 持久化模式: {db_file} (内存上限: 2GB)")
+                print(f"[DuckDB] 持久化模式: {db_file} (内存上限: 2GB"
+                      f", {'只读' if read_only else '读写'})")
 
                 if self._pool is None:
-                    self._pool = ConnectionPool(size=2)
+                    self._pool = ConnectionPool(size=2, read_only=read_only)
 
                 # 检查表是否已存在
                 table_exists = master.execute(
                     "SELECT count(*) FROM duckdb_tables() WHERE table_name='data'"
                 ).fetchone()[0]
 
-                if not table_exists or force:
+                if (not table_exists or force) and not read_only:
                     master.execute(
                         f"CREATE TABLE data AS SELECT * FROM read_parquet('{data_path}')"
                     )
@@ -268,6 +290,7 @@ class DuckDbEngine:
                     db_file=db_file,
                     memory_limit="2GB",
                     mapping_df=mapping_df_for_pool,
+                    read_only=read_only,
                 )
 
                 # 关闭主连接（池中的连接已打开数据库文件）
@@ -317,11 +340,16 @@ class DuckDbEngine:
             self._loaded = True
             self._mapping_loaded = True
 
-            # 创建预聚合热数据表（后台执行，不阻塞加载流程）
-            self._build_aggregate_tables()
+            if read_only:
+                # Step2：只读模式下不重建索引/预聚合表——构建-替换流程保证新库自带全部表。
+                # 若表缺失（构建器异常），查询会在访问对应表时自然报错，而不是启动时崩溃。
+                print("[DuckDB] 只读模式：跳过索引/预聚合重建（由 build_db.py 离线构建）")
+            else:
+                # 创建预聚合热数据表（后台执行，不阻塞加载流程）
+                self._build_aggregate_tables()
 
-            # 创建药品倒排索引表（P1-2 药品加速）
-            self._build_drug_index()
+                # 创建药品倒排索引表（P1-2 药品加速）
+                self._build_drug_index()
 
             # 启动后台连接巡检线程（P1-1 自愈机制）
             self._start_health_checker()
@@ -428,6 +456,19 @@ class DuckDbEngine:
             result["details"] = "引擎未初始化，请先调用 load_data()"
             return result
 
+        # Step2：只读模式下禁止增量加载（构建-替换方案：写由 build_db.py 离线完成）
+        if self._pool._read_only:
+            result["details"] = "引擎处于只读模式，增量加载已禁用（请使用构建-替换流程）"
+            print(f"[增量加载] 拒绝：只读模式")
+            return result
+
+        # Step1 止血：增量加载全程持写锁，防止写期间连接池重建/并发写文件
+        # （DuckDB 多连接写同一文件是 2026-08-07 崩溃根因，写期间禁止 _rebuild）
+        if not self._write_lock.acquire(blocking=False):
+            result["details"] = "已有增量加载或写操作在进行中，请稍后重试"
+            print(f"[增量加载] 拒绝：写锁被占用（并发写保护）")
+            return result
+
         try:
             conn = self._pool.get()
             if conn is None:
@@ -501,6 +542,9 @@ class DuckDbEngine:
         except Exception as e:
             result["details"] = str(e)
             print(f"[增量加载] 失败: {e}")
+        finally:
+            # Step1 止血：无论成功/失败都释放写锁
+            self._write_lock.release()
 
         return result
 
@@ -725,34 +769,41 @@ class DuckDbEngine:
                 time.sleep(30)
                 if not self._loaded or not self._pool or not self._pool._initialized:
                     continue
-                all_dead = True
-                for i in range(self._pool.size):
-                    conn = self._pool._connections[i]
-                    if conn is None:
-                        print(f"[健康巡检] 连接 #{i} 为空，重建中...")
-                        self._pool._rebuild(i)
-                        continue
-                    try:
-                        conn.execute("SELECT 1").fetchone()
-                        all_dead = False
-                    except Exception as e:
-                        print(f"[健康巡检] 连接 #{i} 异常 ({e})，重建中...")
-                        self._pool._rebuild(i)
-                if all_dead:
-                    print("[健康巡检] ⚠️ 所有连接不可用，5秒后触发自动重启...")
-                    time.sleep(5)
-                    # 再次确认是否真的全部不可用
-                    still_dead = True
+                # Step1 止血：增量加载进行中跳过巡检（避免 rebuild 换掉正在写的连接）
+                if not self._write_lock.acquire(blocking=False):
+                    print("[健康巡检] 增量加载进行中，本次巡检跳过")
+                    continue
+                try:
+                    all_dead = True
                     for i in range(self._pool.size):
+                        conn = self._pool._connections[i]
+                        if conn is None:
+                            print(f"[健康巡检] 连接 #{i} 为空，重建中...")
+                            self._pool._rebuild(i)
+                            continue
                         try:
-                            self._pool._connections[i].execute("SELECT 1").fetchone()
-                            still_dead = False
-                            break
-                        except Exception:
-                            pass
-                    if still_dead:
-                        print("[健康巡检] ⚠️ 确认所有连接不可用，正在退出进程（systemd 将自动拉起）...")
-                        os._exit(1)
+                            conn.execute("SELECT 1").fetchone()
+                            all_dead = False
+                        except Exception as e:
+                            print(f"[健康巡检] 连接 #{i} 异常 ({e})，重建中...")
+                            self._pool._rebuild(i)
+                    if all_dead:
+                        print("[健康巡检] ⚠️ 所有连接不可用，5秒后触发自动重启...")
+                        time.sleep(5)
+                        # 再次确认是否真的全部不可用
+                        still_dead = True
+                        for i in range(self._pool.size):
+                            try:
+                                self._pool._connections[i].execute("SELECT 1").fetchone()
+                                still_dead = False
+                                break
+                            except Exception:
+                                pass
+                        if still_dead:
+                            print("[健康巡检] ⚠️ 确认所有连接不可用，正在退出进程（systemd 将自动拉起）...")
+                            os._exit(1)
+                finally:
+                    self._write_lock.release()
 
         self._health_checker_thread = threading.Thread(
             target=checker, daemon=True, name="duckdb-health-checker"
