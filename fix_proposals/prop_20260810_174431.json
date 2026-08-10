@@ -1,0 +1,35 @@
+{
+  "proposal_id": "prop_20260810_174431",
+  "created_at": "2026-08-10 17:44:31",
+  "incident_count": 1,
+  "incident_ids": [
+    "inc_20260810_174429_prod_078"
+  ],
+  "samples": [
+    {
+      "question": "2026年8月9日彩蛋任务ID大于0的场景数量",
+      "warnings": [
+        "LLM创建了未知条件类型: custom"
+      ]
+    }
+  ],
+  "error_pattern": "unknown_condition_type",
+  "confidence": "high",
+  "root_cause": "LLM 自主创建了新的条件类型: custom\n  值: 0\n  问题: 2026年8月9日彩蛋任务ID大于0的场景数量",
+  "fix_proposal": "检测到新的条件类型「custom」，\n值如「0」。\n\n需新增映射步骤：\n1. intent_schemas.py ConditionType 枚举新增\n2. sql_renderer.py CONDITION_SQL_MAP 新增 SQL 映射\n3. 可选的 template_matcher.py 新模板 / llm_translator.py 新示例\n\n⚠️ 修复前：此类查询走 LLM fallback（正确但慢）\n⚠️ 修复后：走模板渲染（毫秒级）",
+  "proposed_changes": [
+    {
+      "action": "add_condition_type",
+      "file": "intent_schemas.py",
+      "type_name": "custom",
+      "comment": "LLM自主创建的类型，值如 0"
+    },
+    {
+      "action": "add_renderer_map",
+      "file": "sql_renderer.py",
+      "type_name": "custom",
+      "sql_template": "需人工确认正确 SQL 映射"
+    }
+  ],
+  "status": "pending_review"
+}
