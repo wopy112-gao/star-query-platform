@@ -14,6 +14,9 @@
 # ============================================================
 set -euo pipefail
 
+# 补 lark-cli 路径（cron 环境 PATH 不含 node 目录，否则飞书告警发不出）
+export PATH="$PATH:/usr/local/lib/nodejs/node-v24.15.0-linux-x64/bin"
+
 STAR_QUERY_DIR="/root/.lightclaw/workspace/star-query"
 TEST_DIR="/root/.lightclaw/workspace/star-query-test"
 LOG_FILE="/var/log/clickhouse-daily-sync.log"
@@ -193,15 +196,6 @@ FULL_FILE="/root/All_data_ch_full.parquet"
 INCR_FILE="$STAR_QUERY_DIR/data/增量_${YESTERDAY}.parquet"
 MERGED_FILE="/root/All_data_ch_full_merged.parquet"
 
-# ---- Step 1.2: 增量 parquet schema 校验（防 7/24 列不匹配复发）----
-log "  📋 校验增量 parquet schema..."
-if ! $PYTHON "$STAR_QUERY_DIR/scripts/check_incr_schema.py" "$INCR_FILE" "$SCHEMA_SNAPSHOT"; then
-    log "  ❌ 增量 schema 校验失败，中止本次同步"
-    notify_feishu "增量 schema 校验失败" "文件: ${INCR_FILE}, 已中止本次同步"
-    exit 1
-fi
-log "  ✅ 增量 schema 校验通过"
-
 # ---- Step 1.5: 增量 parquet 补齐彩蛋字段 ----
 log "  📋 增量 parquet 补齐彩蛋字段..."
 if [ -f "$INCR_FILE" ]; then
@@ -210,6 +204,16 @@ if [ -f "$INCR_FILE" ]; then
 else
     log "  ⚠️ 增量文件不存在: $INCR_FILE"
 fi
+
+# ---- Step 1.2: 增量 parquet schema 校验（防 7/24 列不匹配复发）
+# 注：必须在彩蛋补齐之后校验（原始增量 51 列，补齐后才 54 列）
+log "  📋 校验增量 parquet schema..."
+if ! $PYTHON "$STAR_QUERY_DIR/scripts/check_incr_schema.py" "$INCR_FILE" "$SCHEMA_SNAPSHOT"; then
+    log "  ❌ 增量 schema 校验失败，中止本次同步"
+    notify_feishu "增量 schema 校验失败" "文件: ${INCR_FILE}, 已中止本次同步"
+    exit 1
+fi
+log "  ✅ 增量 schema 校验通过"
 
 log "  📋 合并全量 parquet..."
 $PYTHON -c "
