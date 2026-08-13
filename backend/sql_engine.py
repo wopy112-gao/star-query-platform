@@ -912,6 +912,14 @@ class DuckDbEngine:
         cleaned = re.sub(r'\s+(?:AND|OR)\s*$', '', cleaned)
         cleaned = cleaned.strip()
 
+        # ---- 括号平衡校验（2026-08-13 达必妥事故修复）----
+        # 场景：SQL 为子查询包装结构 `(SELECT ... WHERE (...)) AS _sub` 时，
+        # 移除 LIKE 条件后残留子查询闭合括号 + 别名（如 `) AS _sub`），
+        # 字符串清理无法安全还原括号平衡 → 放弃改写，返回原 SQL（正确性优先）。
+        if cleaned.startswith(')') or re.search(r'\)\s+AS\s+\w+', cleaned):
+            print(f"[药品索引] 跳过改写（子查询包装结构，括号不平衡）: {sql[:80]}...")
+            return sql
+
         # 构建新 WHERE
         if cleaned and cleaned not in ('()', ''):
             new_where = f"WHERE ({subquery}) AND ({cleaned})"
@@ -920,10 +928,14 @@ class DuckDbEngine:
 
         result = f"{before_where} {new_where} {tail}"
         # 清理多余空格
-        # 清理多余空格
         result = re.sub(r'\s+', ' ', result).strip()
         if sql.strip().endswith(';'):
             result = result.rstrip() + ';'
+
+        # 兜底：改写结果仍含空括号/非法模式 → 回退原 SQL
+        if re.search(r'\(\s*\)', result) or re.search(r'\bAND\s*\(\s*\)\b', result):
+            print(f"[药品索引] 改写结果异常，回退原 SQL: {result[:100]}...")
+            return sql
 
         # 打印改写日志（首次命中时）
         if sql != result:

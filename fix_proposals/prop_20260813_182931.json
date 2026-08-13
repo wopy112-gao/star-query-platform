@@ -1,0 +1,21 @@
+{
+  "proposal_id": "prop_20260813_182931",
+  "created_at": "2026-08-13 18:29:31",
+  "incident_count": 1,
+  "incident_ids": [
+    "inc_20260813_182917_prod_085"
+  ],
+  "samples": [
+    {
+      "question": "含达必妥的场景，呈现明细",
+      "warnings": []
+    }
+  ],
+  "error_pattern": "unknown",
+  "confidence": "low",
+  "root_cause": "未识别的错误类型: unknown\n  warning: []",
+  "fix_proposal": "需要人工审查",
+  "proposed_changes": [],
+  "status": "aggregated",
+  "processed_at": "2026-08-13 18:29:31"
+}

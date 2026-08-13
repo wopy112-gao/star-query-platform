@@ -184,6 +184,16 @@ def _execute_paginated(sql: str, page: int, page_size: int) -> dict:
     # 1. COUNT 总数
     count_sql = f"SELECT COUNT(*) AS _cnt FROM ({sql_clean}) AS _sub"
     count_res = engine.execute(count_sql)
+    if not count_res["success"]:
+        print(f"[分页] COUNT 执行失败: {count_res['error']}")
+        return {
+            "rows": [],
+            "elapsed_ms": 0,
+            "total_count": 0,
+            "pagination": None,
+            "sql_used": count_sql,
+            "error": count_res["error"],
+        }
     total_count = count_res["rows"][0]["_cnt"] if count_res["rows"] else 0
 
     # 2. 分页查询
@@ -193,6 +203,16 @@ def _execute_paginated(sql: str, page: int, page_size: int) -> dict:
         f"ORDER BY 场景ID LIMIT {page_size} OFFSET {offset}"
     )
     page_res = engine.execute(page_sql)
+    if not page_res["success"]:
+        print(f"[分页] 分页查询执行失败: {page_res['error']}")
+        return {
+            "rows": [],
+            "elapsed_ms": 0,
+            "total_count": 0,
+            "pagination": None,
+            "sql_used": page_sql,
+            "error": page_res["error"],
+        }
     rows = page_res["rows"]
     elapsed = page_res["elapsed_ms"]
 
@@ -605,6 +625,26 @@ def query(req: QueryRequest, username: str = Depends(get_current_user)):
 
     if use_pagination:
         page_result = _execute_paginated(sql, req.page, req.page_size)
+        # 分页执行失败 → 透出错误（2026-08-13 达必妥事故修复：不再静默返回空结果）
+        if page_result.get("error"):
+            print(f"[分页] 问题「{question}」执行失败: {page_result['error']}")
+            try:
+                from incident_writer import write_incident
+                write_incident(
+                    inc_type="sql_error",
+                    question=question,
+                    sql=sql,
+                    error=page_result["error"],
+                    intent_info=intent_result.intent.to_dict() if intent_result.success and intent_result.intent else None,
+                )
+            except Exception as e:
+                print(f"[自愈] incident 写入失败（不阻塞查询）: {e}")
+            add_history(question, sql, 0, success=False, username=username)
+            return QueryResponse(
+                success=False,
+                error=page_result["error"],
+                hint="查询暂时失败，已记录问题，正在后台修复。请稍后重试。",
+            )
         rows = page_result["rows"]
         # ATC Enrich：补充药品标准化字段
         rows = enrich_query_results(rows)
