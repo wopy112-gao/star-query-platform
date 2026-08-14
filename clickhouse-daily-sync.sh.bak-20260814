@@ -77,13 +77,13 @@ wait_healthy() {
     local port="$1" service="$2"
     local waited=0
     for i in $(seq 1 30); do
-        # 端口未监听则继续等（2026-08-14 修复：cron PATH 无 /usr/sbin，ss 需全路径）
-        if ! /usr/sbin/ss -tlnp 2>/dev/null | grep -q ":$port "; then
+        # 端口未监听则继续等
+        if ! ss -tlnp 2>/dev/null | grep -q ":$port "; then
             sleep 10; waited=$((waited+10))
             continue
         fi
         local rows
-        rows=$(curl -s --max-time 15 "http://localhost:$port/api/health" 2>/dev/null | \
+        rows=$(curl -s "http://localhost:$port/api/health" 2>/dev/null | \
             $PYTHON -c "import sys,json;print(json.load(sys.stdin).get('total_rows',''))" 2>/dev/null || echo "")
         if [ -n "$rows" ] && [ "$rows" != "0" ]; then
             log "  ✅ 服务健康: $service total_rows=$rows (等待${waited}s)"
